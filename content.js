@@ -1,5 +1,9 @@
-// Pinterest Split + Fabric Board (localStorage)
+// Pinterest Split + Fabric Board (localStorage, patched)
 // 前提: fabric.min.js を content_scripts で先に読み込んでいる（Manifestのjs順序）
+// 変更点（要旨）:
+// - <canvas> の width/height を直接いじらず、Fabric の setDimensions に任せる
+// - 外部URL画像は CORS が通る場合に DataURL へ埋め込み変換して再描画時の消失を抑制
+// - zoomToFit は Group を生成せずに境界矩形を計算
 
 (() => {
   const APP_ID = 'prx-root-purefab';
@@ -9,6 +13,7 @@
   const SPLIT_RATIO = 0.30; // 左30% / 右70%
   const LS_KEY = 'prx.fabric.board.json.v1'; // localStorageキー
   const Z = 2147483600; // 高めのz-index
+  const EMBED_MAX_BYTES = 3 * 1024 * 1024; // CORS成功時にDataURL化する上限 (3MB目安)
 
   // ---------- DOM 構築 ----------
   const host = document.createElement('div');
@@ -25,7 +30,6 @@
   // 右側(Pinterest)のレイアウトを左にスペース分だけ押し出す
   document.documentElement.classList.add('prx-split-applied');
   const applyRightShift = () => {
-    // body マージン方式（Pinterest本体のレイアウト崩れを最小化）
     document.documentElement.style.setProperty('--prx-split-width', `${SPLIT_RATIO * 100}vw`);
     document.body.style.marginLeft = `calc(var(--prx-split-width))`;
   };
@@ -123,21 +127,6 @@
   const pane = shadow.querySelector('.pane');
 
   // ---------- Fabric 初期化 ----------
-  const ensureSize = () => {
-    const rect = host.getBoundingClientRect();
-    const dpr = Math.max(1, window.devicePixelRatio || 1);
-    canvasEl.width = rect.width * dpr;
-    canvasEl.height = rect.height * dpr;
-    canvasEl.style.width = rect.width + 'px';
-    canvasEl.style.height = rect.height + 'px';
-    if (canvas) {
-      canvas.setWidth(rect.width);
-      canvas.setHeight(rect.height);
-      canvas.setDimensions({ width: rect.width, height: rect.height });
-      canvas.requestRenderAll();
-    }
-  };
-
   let canvas = null;
   try {
     canvas = new fabric.Canvas(canvasEl, {
@@ -150,30 +139,57 @@
     return;
   }
 
-  // Retina スケール
-  const applyRetina = () => {
-    const ratio = window.devicePixelRatio || 1;
-    const ctx = canvas.getContext();
-    if (ratio !== 1) {
-      ctx.setTransform(1,0,0,1,0,0);
-      canvas.setZoom(1);
-    }
-  };
+  // サイズ適用（<canvas>の属性を直書きせず、Fabric に任せる）
+  const ensureSize = (() => {
+    let lastW = -1, lastH = -1;
+    return () => {
+      const rect = host.getBoundingClientRect();
+      const w = Math.max(1, Math.floor(rect.width));
+      const h = Math.max(1, Math.floor(rect.height));
+      if (w === lastW && h === lastH) return;
+      lastW = w; lastH = h;
+      if (canvas) {
+        canvas.setDimensions({ width: w, height: h }); // Fabric が適切に再描画
+        canvas.calcOffset();
+        canvas.requestRenderAll();
+      }
+    };
+  })();
 
-  // リサイズ対応
   const resizeObserver = new ResizeObserver(() => ensureSize());
   resizeObserver.observe(host);
   window.addEventListener('resize', ensureSize, { passive: true });
   ensureSize();
-  applyRetina();
 
-  // ---------- 画像追加ユーティリティ ----------
+  // ---------- 画像追加ユーティリティ（CORS成功時はDataURLに埋め込み） ----------
   function addImageFromURL(url, opts = {}) {
     return new Promise((resolve, reject) => {
-      // クロスオリジン許可があるサーバーならエクスポート可
-      const imgOpts = { crossOrigin: 'anonymous', ...opts };
-      fabric.Image.fromURL(url, (img) => {
+      const isData = /^data:/i.test(url);
+      const imgOpts = isData ? opts : { crossOrigin: 'anonymous', ...opts };
+
+      fabric.Image.fromURL(url, async (img) => {
         if (!img) return reject(new Error('Image load failed'));
+
+        // 可能なら埋め込みに置き換え（CORSが通るURLのみ）
+        if (!isData) {
+          try {
+            const res = await fetch(url, { mode: 'cors', credentials: 'omit', cache: 'force-cache' });
+            if (res.ok) {
+              const blob = await res.blob();
+              if (blob.size <= EMBED_MAX_BYTES) {
+                const dataUrl = await new Promise(r => {
+                  const fr = new FileReader();
+                  fr.onload = () => r(fr.result);
+                  fr.readAsDataURL(blob);
+                });
+                await new Promise(r => img.setSrc(dataUrl, r)); // 埋め込みへ差し替え
+              }
+            }
+          } catch (err) {
+            // CORS不可の場合はそのままURL描画（エクスポートや将来再描画で失敗する可能性あり）
+          }
+        }
+
         // 初期サイズ調整（大きすぎる場合は収める）
         const maxW = canvas.getWidth() * 0.8;
         const maxH = canvas.getHeight() * 0.8;
@@ -184,6 +200,7 @@
           selectable: true
         });
         img.scale(scale);
+
         canvas.add(img);
         canvas.setActiveObject(img);
         canvas.requestRenderAll();
@@ -317,20 +334,34 @@
     canvas.requestRenderAll();
   }
 
-  function zoomToFit() {
-    const objs = canvas.getObjects();
-    if (!objs.length) { resetZoom(); return; }
-    const group = new fabric.Group(objs.map(o => o), { selectable: false });
-    const bounds = group.getBoundingRect();
-    group.destroy();
+  function getObjectsBoundingRect(objs) {
+    if (!objs.length) return { left:0, top:0, width:0, height:0 };
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const o of objs) {
+      const r = o.getBoundingRect(true, true); // absolute, calculate
+      minX = Math.min(minX, r.left);
+      minY = Math.min(minY, r.top);
+      maxX = Math.max(maxX, r.left + r.width);
+      maxY = Math.max(maxY, r.top + r.height);
+    }
+    return { left: minX, top: minY, width: maxX - minX, height: maxY - minY };
+    // 注: 画像が clipPath 等を持つ場合は必要に応じて拡張
+  }
 
+  function zoomToFit() {
+    const objs = canvas.getObjects().filter(o => o.visible);
+    if (!objs.length) { resetZoom(); return; }
+
+    const bounds = getObjectsBoundingRect(objs);
     const pad = 40;
-    const w = canvas.getWidth() - pad * 2;
-    const h = canvas.getHeight() - pad * 2;
+    const w = Math.max(1, canvas.getWidth() - pad * 2);
+    const h = Math.max(1, canvas.getHeight() - pad * 2);
     const scale = Math.min(w / bounds.width, h / bounds.height);
     const zoom = Math.max(0.1, Math.min(10, scale));
-    canvas.setViewportTransform([zoom,0,0,zoom,
-      -(bounds.left)*zoom + pad, -(bounds.top)*zoom + pad
+    canvas.setViewportTransform([
+      zoom, 0, 0, zoom,
+      -(bounds.left) * zoom + pad,
+      -(bounds.top) * zoom + pad
     ]);
     canvas.requestRenderAll();
   }
@@ -339,7 +370,6 @@
   function saveToLocalStorage() {
     try {
       const json = canvas.toJSON();
-      // DataURL画像はそのままJSONに含まれる。リモートURLはsrcだけが保存され再取得されます。
       localStorage.setItem(LS_KEY, JSON.stringify(json));
       toast('保存しました');
     } catch (e) {
@@ -350,7 +380,8 @@
 
   function loadFromLocalStorage() {
     const raw = localStorage.getItem(LS_KEY);
-    if (!raw) { toast('保存データがありません'); return; }
+    if (!raw) { toast('保存データがありません'); return;
+    }
     try {
       const json = JSON.parse(raw);
       canvas.clear();
@@ -376,10 +407,7 @@
   // ---------- PNG エクスポート ----------
   function exportPNG() {
     try {
-      const url = canvas.toDataURL({
-        format: 'png',
-        enableRetinaScaling: true
-      });
+      const url = canvas.toDataURL({ format: 'png', enableRetinaScaling: true });
       const a = document.createElement('a');
       a.href = url;
       a.download = 'board.png';
