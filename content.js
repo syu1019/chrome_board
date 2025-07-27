@@ -1,17 +1,19 @@
-// Pinterest Split + Fabric Board (localStorage, patched)
+// Pinterest Split + Fabric Board (localStorage, patched for RIGHT 30% board)
 // 前提: fabric.min.js を content_scripts で先に読み込んでいる（Manifestのjs順序）
 // 変更点（要旨）:
 // - <canvas> の width/height を直接いじらず、Fabric の setDimensions に任せる
 // - 外部URL画像は CORS が通る場合に DataURL へ埋め込み変換して再描画時の消失を抑制
 // - zoomToFit は Group を生成せずに境界矩形を計算
-// - Pinterest の fixed ヘッダーを左ペイン幅ぶん右に押し出すCSSを注入
+// - Pinterest の fixed ヘッダーを右側ボード幅ぶん左に詰めるCSSを注入（ボードは右側 30%）
+//
+// レイアウト: Pinterest 70%（左） / ボード 30%（右）
 
 (() => {
   const APP_ID = 'prx-root-purefab';
   if (document.getElementById(APP_ID)) return; // 多重起動防止
 
   // ---------- 基本設定 ----------
-  const SPLIT_RATIO = 0.30; // 左30% / 右70%
+  const SPLIT_RATIO = 0.30; // ボード 30%（右側）
   const LS_KEY = 'prx.fabric.board.json.v1'; // localStorageキー
   const Z = 2147483600; // 高めのz-index
   const EMBED_MAX_BYTES = 3 * 1024 * 1024; // CORS成功時にDataURL化する上限 (3MB目安)
@@ -20,23 +22,24 @@
   const host = document.createElement('div');
   host.id = APP_ID;
   host.style.position = 'fixed';
-  host.style.inset = '0 auto 0 0';
+  host.style.inset = '0 0 0 auto'; // 右固定
   host.style.width = `${SPLIT_RATIO * 100}vw`;
   host.style.height = '100vh';
   host.style.zIndex = Z;
-  host.style.pointerEvents = 'auto'; // 左側は操作可
+  host.style.pointerEvents = 'auto'; // ボード側は操作可
   host.style.display = 'block';
   document.documentElement.appendChild(host);
 
-  // 右側(Pinterest)のレイアウトを左にスペース分だけ押し出す
+  // 左側(Pinterest)のレイアウトに右側のボード分の空きを作る
   document.documentElement.classList.add('prx-split-applied');
   const applyRightShift = () => {
     document.documentElement.style.setProperty('--prx-split-width', `${SPLIT_RATIO * 100}vw`);
-    document.body.style.marginLeft = `calc(var(--prx-split-width))`;
+    document.body.style.marginLeft = '0'; // 念のためリセット
+    document.body.style.marginRight = `calc(var(--prx-split-width))`; // 右側に空き
   };
   applyRightShift();
 
-  // ---- Pinterest固定ヘッダーを右に押し出す全局CSSを注入（fixed要素はbodyのmarginの影響を受けないため）----
+  // ---- Pinterest固定ヘッダーを左に詰める全局CSSを注入（fixed要素はbodyのmarginの影響を受けないため）----
   (() => {
     const styleId = 'prx-split-global-css';
     if (document.getElementById(styleId)) return;
@@ -44,22 +47,24 @@
     s.id = styleId;
     s.textContent = `
       html.prx-split-applied { /* --prx-split-width はJS側で設定済み */ }
-      /* 代表的なヘッダー候補 */
+
+      /* 代表的なヘッダー候補を右側ボード幅ぶん左に詰める */
       html.prx-split-applied [data-test-id="header"],
       html.prx-split-applied header[role="banner"],
       html.prx-split-applied header {
         position: fixed !important;
-        left: var(--prx-split-width) !important;
-        right: 0 !important;
+        left: 0 !important;
+        right: var(--prx-split-width) !important;
         width: calc(100vw - var(--prx-split-width)) !important;
         max-width: none !important;
         box-sizing: border-box !important;
       }
-      /* 保険: top:0 の fixed 要素（div/nav）も押し出す */
+
+      /* 保険: top:0 の fixed 要素（div/nav）も詰める */
       html.prx-split-applied div[style*="position: fixed"][style*="top: 0"],
       html.prx-split-applied nav[style*="position: fixed"][style*="top: 0"] {
-        left: var(--prx-split-width) !important;
-        right: 0 !important;
+        left: 0 !important;
+        right: var(--prx-split-width) !important;
         width: calc(100vw - var(--prx-split-width)) !important;
         box-sizing: border-box !important;
       }
@@ -82,7 +87,7 @@
       width: 100%;
       height: 100vh;
       background: #1e1e1e;
-      box-shadow: 2px 0 10px rgba(0,0,0,.4);
+      box-shadow: -2px 0 10px rgba(0,0,0,.4); /* 右ペインっぽく左側に影 */
       overflow: hidden;
       outline: none;
     }
@@ -484,7 +489,7 @@
   }
 
   async function handlePaste(e) {
-    // 左ペインにフォーカスが無い場合は何もしない（Pinterest側入力を邪魔しない）
+    // 右ペインにフォーカスが無い場合は何もしない（Pinterest側入力を邪魔しない）
     const path = (e.composedPath && e.composedPath()) || [];
     const inPane = path.includes(pane) || path.includes(host);
     if (!(paneHasFocus || inPane)) return;
