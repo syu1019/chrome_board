@@ -4,6 +4,7 @@
 // - <canvas> の width/height を直接いじらず、Fabric の setDimensions に任せる
 // - 外部URL画像は CORS が通る場合に DataURL へ埋め込み変換して再描画時の消失を抑制
 // - zoomToFit は Group を生成せずに境界矩形を計算
+// - Pinterest の fixed ヘッダーを左ペイン幅ぶん右に押し出すCSSを注入
 
 (() => {
   const APP_ID = 'prx-root-purefab';
@@ -34,6 +35,37 @@
     document.body.style.marginLeft = `calc(var(--prx-split-width))`;
   };
   applyRightShift();
+
+  // ---- Pinterest固定ヘッダーを右に押し出す全局CSSを注入（fixed要素はbodyのmarginの影響を受けないため）----
+  (() => {
+    const styleId = 'prx-split-global-css';
+    if (document.getElementById(styleId)) return;
+    const s = document.createElement('style');
+    s.id = styleId;
+    s.textContent = `
+      html.prx-split-applied { /* --prx-split-width はJS側で設定済み */ }
+      /* 代表的なヘッダー候補 */
+      html.prx-split-applied [data-test-id="header"],
+      html.prx-split-applied header[role="banner"],
+      html.prx-split-applied header {
+        position: fixed !important;
+        left: var(--prx-split-width) !important;
+        right: 0 !important;
+        width: calc(100vw - var(--prx-split-width)) !important;
+        max-width: none !important;
+        box-sizing: border-box !important;
+      }
+      /* 保険: top:0 の fixed 要素（div/nav）も押し出す */
+      html.prx-split-applied div[style*="position: fixed"][style*="top: 0"],
+      html.prx-split-applied nav[style*="position: fixed"][style*="top: 0"] {
+        left: var(--prx-split-width) !important;
+        right: 0 !important;
+        width: calc(100vw - var(--prx-split-width)) !important;
+        box-sizing: border-box !important;
+      }
+    `;
+    document.head.appendChild(s);
+  })();
 
   // Shadow DOM でスタイル隔離
   const shadow = host.attachShadow({ mode: 'open' });
@@ -380,8 +412,7 @@
 
   function loadFromLocalStorage() {
     const raw = localStorage.getItem(LS_KEY);
-    if (!raw) { toast('保存データがありません'); return;
-    }
+    if (!raw) { toast('保存データがありません'); return; }
     try {
       const json = JSON.parse(raw);
       canvas.clear();
