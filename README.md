@@ -16,8 +16,6 @@ manifest.jsonとcontent.jsにすべてをまとめるようにしてください
 `Could not load icon 'icon16.png' specified in 'icons'.`のエラーが出るのでマニフェストにアイコンを含めないでください
 
 ストレージはローカルストレージを使用してください
-
-ボードを移動できる機能を不要です
 ```
 
 ## メモ
