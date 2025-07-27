@@ -48,6 +48,7 @@
       background: #1e1e1e;
       box-shadow: 2px 0 10px rgba(0,0,0,.4);
       overflow: hidden;
+      outline: none;
     }
     .toolbar {
       position: absolute;
@@ -90,7 +91,7 @@
   const wrap = document.createElement('div');
   wrap.className = 'wrap';
   wrap.innerHTML = `
-    <div class="pane">
+    <div class="pane" tabindex="0" aria-label="PureRef-like board (paste image with Ctrl+V)">
       <div class="toolbar">
         <button id="btnSave">保存</button>
         <button id="btnLoad">読込</button>
@@ -100,10 +101,10 @@
         <button id="btnAddUrl">追加</button>
         <button id="btnExport">PNG書き出し</button>
       </div>
-      <div class="drop-hint">ここに画像ファイル or 画像URLをドロップ</div>
+      <div class="drop-hint">ここに画像ファイル or 画像URLをドロップ（Ctrl+V でも貼り付け可）</div>
       <canvas id="board"></canvas>
       <div class="help">
-        操作: マウスホイール=拡大縮小 / Space+ドラッグ=パン / クリックで選択<br/>
+        操作: マウスホイール=拡大縮小 / Space+ドラッグ=パン / クリックで選択 / Ctrl+V=貼り付け<br/>
         ショートカット: Delete=削除, Ctrl+D=複製, 0=ズームリセット, F=全体表示<br/>
         保存は自動でも行われます（数秒おき, localStorage）。
       </div>
@@ -119,6 +120,7 @@
   const btnAddUrl = shadow.getElementById('btnAddUrl');
   const btnExport = shadow.getElementById('btnExport');
   const imgUrlInput = shadow.getElementById('imgUrl');
+  const pane = shadow.querySelector('.pane');
 
   // ---------- Fabric 初期化 ----------
   const ensureSize = () => {
@@ -200,7 +202,6 @@
   }
 
   // ---------- DnD ----------
-  const pane = shadow.querySelector('.pane');
   pane.addEventListener('dragover', (e) => {
     e.preventDefault();
     hintEl.style.borderColor = '#555';
@@ -409,6 +410,88 @@
       btnAddUrl.click();
     }
   });
+
+  // ---------- Ctrl+V 貼り付け対応 ----------
+  let paneHasFocus = false;
+  pane.addEventListener('mousedown', () => { paneHasFocus = true; });
+  pane.addEventListener('focus', () => { paneHasFocus = true; });
+  pane.addEventListener('blur', () => { paneHasFocus = false; });
+  pane.addEventListener('mouseleave', () => { /* クリックでのフォーカス維持のため離脱では消さない */ });
+
+  function isLikelyImageURL(s) {
+    return /^data:image\//i.test(s)
+        || /\.(png|jpe?g|webp|gif|bmp|svg)(\?.*)?$/i.test(s)
+        || /^https?:\/\//i.test(s); // 拡張子なしの画像CDNも許容
+  }
+
+  async function handlePaste(e) {
+    // 左ペインにフォーカスが無い場合は何もしない（Pinterest側入力を邪魔しない）
+    const path = (e.composedPath && e.composedPath()) || [];
+    const inPane = path.includes(pane) || path.includes(host);
+    if (!(paneHasFocus || inPane)) return;
+
+    const cd = e.clipboardData;
+    if (!cd) return;
+
+    let added = 0;
+
+    // 1) Fileとしての画像
+    const files = Array.from(cd.files || []);
+    for (const f of files) {
+      if (f.type && f.type.startsWith('image/')) {
+        try { await addImageFromFile(f); added++; } catch (err) { console.warn(err); }
+      }
+    }
+
+    // 2) items経由（ブラウザ差異対策）
+    if (!added && cd.items) {
+      for (const it of cd.items) {
+        if (it.type && it.type.startsWith('image/')) {
+          const f = it.getAsFile();
+          if (f) {
+            try { await addImageFromFile(f); added++; } catch (err) { console.warn(err); }
+          }
+        }
+      }
+    }
+
+    // 3) text/html 内の <img src> / CSS url()
+    if (!added) {
+      const html = cd.getData('text/html');
+      if (html) {
+        try {
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          let src = '';
+          const img = doc.querySelector('img');
+          if (img && img.src) src = img.src;
+          if (!src) {
+            const m = html.match(/url\(\s*['"]?(.*?)['"]?\s*\)/i);
+            if (m && m[1]) src = m[1];
+          }
+          if (src && isLikelyImageURL(src)) {
+            try { await addImageFromURL(src); added++; } catch (err) { console.warn(err); }
+          }
+        } catch (err) { /* ignore */ }
+      }
+    }
+
+    // 4) text/plain（URL / Data URL）
+    if (!added) {
+      const text = (cd.getData('text/plain') || '').trim();
+      if (text && isLikelyImageURL(text)) {
+        try { await addImageFromURL(text); added++; } catch (err) { console.warn(err); }
+      }
+    }
+
+    if (added) {
+      autoSaveSoon();
+      toast(`${added}件貼り付け`);
+      e.preventDefault(); // 画像を追加できた場合のみ既定動作を抑止
+    }
+  }
+
+  // キャプチャ段階で受ける（Pinterest側が先に処理しないように）
+  window.addEventListener('paste', handlePaste, true);
 
   // ---------- トースト ----------
   let toastTimer = null;
