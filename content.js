@@ -68,6 +68,9 @@
         width: calc(100vw - var(--prx-split-width)) !important;
         box-sizing: border-box !important;
       }
+      
+      /* Pinterest内のヘッダー内ラッパー調整（ユーザー報告で有効だったクラス） */
+      html.prx-split-applied .Jea.KS5.i1W.ujU.xcv.L4E.zI7 { padding-left: 78px !important; }
     `;
     document.head.appendChild(s);
   })();
