@@ -130,7 +130,9 @@
   host.append(bar, wrap);
 
   const barEls = [title, urlInput, btnAdd, btnClear];
-  let barHidden = false;
+  let barHidden = true;
+  for (const el of barEls) el.style.display = 'none';
+  btnToggleBar.textContent = '\u25BC'; // ▼
   btnToggleBar.addEventListener('click', () => {
     barHidden = !barHidden;
     for (const el of barEls) el.style.display = barHidden ? 'none' : '';
