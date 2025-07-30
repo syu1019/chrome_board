@@ -81,11 +81,7 @@
   btnClear.textContent = '全削除';
   stylizeButton(btnClear);
 
-  const hint = document.createElement('div');
-  hint.textContent = 'Drop / Paste / URL追加、Deleteで削除。パン/ズームはありません。';
-  Object.assign(hint.style, { color: '#aaa', marginLeft: 'auto' });
-
-  bar.append(title, urlInput, btnAdd, btnClear, hint);
+  bar.append(title, urlInput, btnAdd, btnClear);
 
   // キャンバスラッパ
   const wrap = document.createElement('div');
