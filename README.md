@@ -16,6 +16,34 @@ manifest.jsonとcontent.jsにすべてをまとめるようにしてください
 `Could not load icon 'icon16.png' specified in 'icons'.`のエラーが出るのでマニフェストにアイコンを含めないでください
 
 ストレージはローカルストレージを使用してください
+
+パンは付けないでください
+ズームはつけないでください
+
+マニフェストはこれを使います
+~~~
+{
+  "name": "Pinterest Split + Fabric Board",
+  "description": "Pinterest画面を3:7に分割し、左にFabric.jsでボードを表示します。",
+  "version": "1.0.0",
+  "manifest_version": 3,
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.pinterest.com/*",
+        "http://*.pinterest.com/*",
+        "https://*.pinterest.jp/*",
+        "http://*.pinterest.jp/*"
+      ],
+      "run_at": "document_end",
+      "js": [
+        "fabric.min.js",
+        "content.js"
+      ]
+    }
+  ]
+}
+~~~
 ```
 
 ## メモ
