@@ -1,4 +1,4 @@
-// Pinterest Split + Fabric Board (localStorage, no pan, no zoom, RIGHT board, toolbar removed)
+// Pinterest Split + Fabric Board (localStorage, no pan, no zoom, RIGHT board, toolbar removed, max 8 images)
 // 前提: fabric.min.js を manifest で content.js より先に読み込み済み
 
 (() => {
@@ -6,7 +6,7 @@
   const APP_ID = 'prx-root-purefab';
   const STYLE_ID = APP_ID + '-style';
 
-  // ----- 重要: 既存ノードを必ずクリーンアップしてからマウント -----
+  // ----- 既存ノードのクリーンアップ -----
   try {
     const oldHost = document.getElementById(APP_ID);
     if (oldHost && oldHost.parentNode) oldHost.parentNode.removeChild(oldHost);
@@ -30,6 +30,7 @@
   const Z = 2147483600;
   const BG = '#1c1c1c';
   const CANVAS_BG = '#2a2a2a';
+  const MAX_IMAGES = 8; // ★ 画像枚数の上限
 
   // -------- スタイル注入（Pinterest側レイアウト調整のみ） --------
   const style = document.createElement('style');
@@ -73,6 +74,35 @@
     display: 'block'
   });
 
+  // 右下トースト（簡易通知）
+  const toast = (() => {
+    let tm, el;
+    return (msg, ms = 1400) => {
+      if (!el) {
+        el = document.createElement('div');
+        Object.assign(el.style, {
+          position: 'absolute',
+          right: '12px',
+          bottom: '12px',
+          background: 'rgba(0,0,0,0.85)',
+          color: '#fff',
+          padding: '8px 12px',
+          borderRadius: '8px',
+          font: '12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          pointerEvents: 'none',
+          opacity: '0',
+          transition: 'opacity 200ms',
+          zIndex: Z + 1
+        });
+        wrap.appendChild(el);
+      }
+      el.textContent = msg;
+      el.style.opacity = '1';
+      clearTimeout(tm);
+      tm = setTimeout(() => { el.style.opacity = '0'; }, ms);
+    };
+  })();
+
   // <canvas>
   const elCanvas = document.createElement('canvas');
   elCanvas.id = APP_ID + '-canvas';
@@ -108,12 +138,38 @@
   new ResizeObserver(resize).observe(wrap);
   resize();
 
+  // === 画像上限制御 ===
+  const getImageCount = () => canvas.getObjects('image').length;
+  function ensureCanAdd(need = 1) {
+    const left = MAX_IMAGES - getImageCount();
+    if (left < need) {
+      toast(`画像は最大 ${MAX_IMAGES} 枚までです`);
+      return false;
+    }
+    return true;
+  }
+  function enforceImageLimitAfterLoad() {
+    const imgs = canvas.getObjects('image');
+    if (imgs.length <= MAX_IMAGES) return;
+    const excess = imgs.length - MAX_IMAGES;
+    for (let i = 0; i < excess; i++) {
+      // 先に追加されたものから削除（スタック下層）
+      const list = canvas.getObjects('image');
+      if (list[i]) canvas.remove(list[i]);
+    }
+    canvas.requestRenderAll();
+    scheduleSave();
+    toast(`画像は最大 ${MAX_IMAGES} 枚までに制限しました`);
+  }
+
   // -------- 画像追加ユーティリティ --------
   function addImageFromUrl(url) {
     if (!url) return;
+    if (!ensureCanAdd(1)) return; // 事前チェック
     const clean = url.trim();
     fabric.Image.fromURL(clean, (img) => {
       if (!img) return;
+      if (!ensureCanAdd(1)) return; // 同時投入等の競合に備え再チェック
       img.set({ crossOrigin: 'anonymous' });
 
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
@@ -133,6 +189,7 @@
 
   function addImageFromFile(file) {
     if (!file || !file.type?.startsWith('image/')) return;
+    if (!ensureCanAdd(1)) return;
     const reader = new FileReader();
     reader.onload = () => addImageFromUrl(reader.result);
     reader.readAsDataURL(file);
@@ -140,9 +197,12 @@
 
   function addImageFromBlob(blob) {
     if (!blob || !blob.type?.startsWith('image/')) return;
+    if (!ensureCanAdd(1)) return;
     const url = URL.createObjectURL(blob);
     fabric.Image.fromURL(url, (img) => {
       if (!img) { URL.revokeObjectURL(url); return; }
+      if (!ensureCanAdd(1)) { URL.revokeObjectURL(url); return; }
+
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
       img.set({
         left: (canvas.getWidth() - img.getScaledWidth()) / 2,
@@ -195,14 +255,23 @@
   wrap.addEventListener('drop', (e) => {
     const dt = e.dataTransfer;
     if (!dt) return;
+
+    // ファイル複数投入は空き分だけ受ける
     if (dt.files && dt.files.length) {
-      for (const f of dt.files) addImageFromFile(f);
+      let capacity = MAX_IMAGES - getImageCount();
+      if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
+      const files = Array.from(dt.files).slice(0, capacity);
+      for (const f of files) addImageFromFile(f);
       return;
     }
+
     const uriList = dt.getData('text/uri-list');
     const plain = dt.getData('text/plain');
     const text = (uriList || plain || '').trim();
-    if (isProbablyUrl(text)) addImageFromUrl(text);
+    if (text && isProbablyUrl(text)) {
+      if (!ensureCanAdd(1)) return;
+      addImageFromUrl(text);
+    }
   });
 
   function isProbablyUrl(s) {
@@ -217,15 +286,22 @@
     const cd = e.clipboardData;
     if (!cd) return;
 
-    const items = Array.from(cd.items || []);
-    for (const it of items) {
-      if (it.kind === 'file' && it.type?.startsWith('image/')) {
+    const items = Array.from(cd.items || []).filter(it => it.kind === 'file' && it.type?.startsWith('image/'));
+    if (items.length) {
+      let capacity = MAX_IMAGES - getImageCount();
+      if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
+      for (const it of items.slice(0, capacity)) {
         const blob = it.getAsFile();
-        if (blob) { addImageFromBlob(blob); return; }
+        if (blob) addImageFromBlob(blob);
       }
+      return;
     }
+
     const text = cd.getData('text')?.trim();
-    if (text && isProbablyUrl(text)) addImageFromUrl(text);
+    if (text && isProbablyUrl(text)) {
+      if (!ensureCanAdd(1)) return;
+      addImageFromUrl(text);
+    }
   });
 
   // -------- キーボードショートカット（Deleteで削除） --------
@@ -268,6 +344,8 @@
       if (!parsed?.json) return;
       canvas.loadFromJSON(parsed.json, () => {
         canvas.renderAll();
+        // 読み込み直後に上限を適用（9枚以上保存されていた場合の整理）
+        enforceImageLimitAfterLoad();
       });
     } catch (e) {
       console.warn('Failed to load canvas JSON:', e);
