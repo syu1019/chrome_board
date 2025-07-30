@@ -112,14 +112,6 @@
     .toolbar button { background: #2d2d2d; color: #eaeaea; cursor: pointer; }
     .toolbar button:hover { background: #3a3a3a; }
     .toolbar .spacer { flex: 1; }
-    .help {
-      position: absolute; bottom: 8px; left: 8px;
-      background: rgba(0,0,0,.45);
-      padding: 6px 8px; border-radius: 8px;
-      font-size: 12px; line-height: 1.4;
-      white-space: pre-line;
-      pointer-events: none;
-    }
     canvas { display:block; }
     .drop-hint {
       position:absolute; inset:0;
@@ -147,11 +139,6 @@
       </div>
       <div class="drop-hint">ここに画像ファイル or 画像URLをドロップ（Ctrl+V でも貼り付け可）</div>
       <canvas id="board"></canvas>
-      <div class="help">
-        操作: マウスホイール=拡大縮小 / Space+ドラッグ=パン / クリックで選択 / Ctrl+V=貼り付け<br/>
-        ショートカット: Delete=削除, Ctrl+D=複製, 0=ズームリセット, F=全体表示<br/>
-        保存は自動でも行われます（数秒おき, localStorage）。
-      </div>
     </div>
   `;
   shadow.appendChild(wrap);
