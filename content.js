@@ -104,7 +104,12 @@
   btnClear.textContent = '全削除';
   stylizeButton(btnClear);
 
-  bar.append(title, urlInput, btnAdd, btnClear);
+  const btnToggleBar = document.createElement('button');
+  btnToggleBar.textContent = '\u25B2'; // ▲
+  stylizeButton(btnToggleBar);
+  Object.assign(btnToggleBar.style, { marginLeft: 'auto' });
+
+  bar.append(title, urlInput, btnAdd, btnClear, btnToggleBar);
 
   // キャンバスラッパ
   const wrap = document.createElement('div');
@@ -122,6 +127,15 @@
   wrap.appendChild(elCanvas);
 
   host.append(bar, wrap);
+
+  const barEls = [title, urlInput, btnAdd, btnClear];
+  let barHidden = false;
+  btnToggleBar.addEventListener('click', () => {
+    barHidden = !barHidden;
+    for (const el of barEls) el.style.display = barHidden ? 'none' : '';
+    btnToggleBar.textContent = barHidden ? '\u25BC' : '\u25B2'; // ▼ : ▲
+  });
+
   // 安定のため body にアペンド（documentElement でもよいが body の方が置換に強いケースがある）
   (document.body || document.documentElement).appendChild(host);
 
