@@ -1,4 +1,4 @@
-// Pinterest Split + Fabric Board (localStorage, no pan, no zoom)
+// Pinterest Split + Fabric Board (localStorage, no pan, no zoom, RIGHT board)
 // 前提: fabric.min.js を manifest で content.js より先に読み込み済み
 
 (() => {
@@ -7,7 +7,7 @@
   if (document.getElementById(APP_ID)) return; // 多重起動防止
 
   // -------- 基本設定 --------
-  const SPLIT_RATIO = 0.30;                  // 左 30%（ボード）/ 右 70%（Pinterest）
+  const SPLIT_RATIO = 0.30;                  // 右 30%（ボード）/ 左 70%（Pinterest）
   const LS_KEY = 'prx.fabric.board.json.v1'; // localStorage キー
   const Z = 2147483600;                      // 高めの z-index
   const BG = '#1c1c1c';
@@ -18,18 +18,19 @@
   style.id = APP_ID + '-style';
   style.textContent = `
     html { overflow-x: hidden !important; }
-    body { margin-left: ${SPLIT_RATIO * 100}vw !important; }
+    /* 右側 30vw をボードが占有するため、本体は右余白を空ける */
+    body { margin-right: ${SPLIT_RATIO * 100}vw !important; }
     /* Pinterest が固定ヘッダー等で横幅を使い切る場合に備えて */
     [role="main"], #__PWS_ROOT__, #__PWS_ROOT__ > div { max-width: 100% !important; }
   `;
   document.documentElement.appendChild(style);
 
-  // -------- 左ペイン（ボード）DOM 構築 --------
+  // -------- 右ペイン（ボード）DOM 構築 --------
   const host = document.createElement('div');
   host.id = APP_ID;
   Object.assign(host.style, {
     position: 'fixed',
-    inset: '0 auto 0 0',
+    inset: '0 0 0 auto',             // ← 右寄せ
     width: `${SPLIT_RATIO * 100}vw`,
     height: '100vh',
     background: BG,
@@ -39,7 +40,7 @@
     pointerEvents: 'auto',
     userSelect: 'none',
     boxSizing: 'border-box',
-    borderRight: '1px solid #000'
+    borderLeft: '1px solid #000'     // ← 右ペインなので左側に罫線
   });
 
   // ツールバー
