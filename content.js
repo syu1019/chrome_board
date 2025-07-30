@@ -43,6 +43,8 @@
     body { margin-right: ${SPLIT_RATIO * 100}vw !important; }
     /* Pinterest が固定ヘッダー等で横幅を使い切る場合に備えて */
     [role="main"], #__PWS_ROOT__, #__PWS_ROOT__ > div { max-width: 100% !important; }
+    /* Adjust width of specific Pinterest container */
+    .jzS.un8.C9i.TB_ { width: 68% !important; }
   `;
   (document.head || document.documentElement).appendChild(style);
 
