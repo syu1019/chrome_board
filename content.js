@@ -1,4 +1,4 @@
-// Pinterest Split + Fabric Board (localStorage, no pan, no zoom, RIGHT board)
+// Pinterest Split + Fabric Board (localStorage, no pan, no zoom, RIGHT board, collapsible Notion-like toolbar)
 // 前提: fabric.min.js を manifest で content.js より先に読み込み済み
 
 (() => {
@@ -7,17 +7,14 @@
   const STYLE_ID = APP_ID + '-style';
 
   // ----- 重要: 既存ノードを必ずクリーンアップしてからマウント -----
-  // （通常リロード/SPA再描画/キャッシュ復元で古いノードが残っても毎回再構築する）
   try {
     const oldHost = document.getElementById(APP_ID);
     if (oldHost && oldHost.parentNode) oldHost.parentNode.removeChild(oldHost);
     const oldStyle = document.getElementById(STYLE_ID);
     if (oldStyle && oldStyle.parentNode) oldStyle.parentNode.removeChild(oldStyle);
-  } catch (e) {
-    // 何もしない（安全側）
-  }
+  } catch (e) {}
 
-  // 離脱時にも片付け（特に bfcache/復帰での不整合を抑える）
+  // 離脱時にも片付け（bfcache/復帰の不整合抑制）
   window.addEventListener('pagehide', () => {
     try {
       const n1 = document.getElementById(APP_ID);
@@ -29,22 +26,117 @@
 
   // -------- 基本設定 --------
   const SPLIT_RATIO = 0.30;                  // 右 30%（ボード）/ 左 70%（Pinterest）
-  const LS_KEY = 'prx.fabric.board.json.v1'; // localStorage キー
-  const Z = 2147483600;                      // 高めの z-index
+  const LS_KEY = 'prx.fabric.board.json.v1'; // Canvas JSON 保存
+  const LS_UI_KEY = 'prx.fabric.board.ui.v1'; // UI 状態（ツールバー開閉）
+  const Z = 2147483600;
   const BG = '#1c1c1c';
   const CANVAS_BG = '#2a2a2a';
 
-  // -------- スタイル注入（Pinterest側を 70% に）--------
+  // 既定の UI 状態
+  const uiState = loadUIState() || { collapsed: false };
+
+  // -------- スタイル注入 --------
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
+    :root {
+      --prx-radius: 10px;
+      --prx-radius-sm: 8px;
+      --prx-border: #2f2f2f;
+      --prx-surface: #202020;
+      --prx-surface-2: #2a2a2a;
+      --prx-text: #e8e8e8;
+      --prx-text-dim: #bdbdbd;
+      --prx-shadow: rgba(0,0,0,0.35);
+      --prx-focus: #5b9cff;
+    }
     html { overflow-x: hidden !important; }
     /* 右側 30vw をボードが占有するため、本体は右余白を空ける */
     body { margin-right: ${SPLIT_RATIO * 100}vw !important; }
-    /* Pinterest が固定ヘッダー等で横幅を使い切る場合に備えて */
+    /* Pinterest 側の最大幅/固定ヘッダー調整の保険 */
     [role="main"], #__PWS_ROOT__, #__PWS_ROOT__ > div { max-width: 100% !important; }
-    /* Adjust width of specific Pinterest container */
+    /* ユーザー報告の特定コンテナ幅調整（必要に応じて） */
     .jzS.un8.C9i.TB_ { width: 68% !important; }
+
+    /* ---- Notion風バー ---- */
+    #${APP_ID} .prx-bar {
+      display: grid;
+      grid-template-rows: auto auto;
+      gap: 6px;
+      padding: 8px 10px;
+      background: var(--prx-surface);
+      border-bottom: 1px solid var(--prx-border);
+      font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      box-shadow: 0 2px 8px var(--prx-shadow);
+    }
+    #${APP_ID} .prx-title-row {
+      display: flex; align-items: center; gap: 8px;
+      min-height: 32px;
+    }
+    #${APP_ID} .prx-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: var(--prx-text);
+      font-weight: 600;
+      padding: 6px 10px;
+      border: 1px solid var(--prx-border);
+      border-radius: var(--prx-radius);
+      background: rgba(255,255,255,0.03);
+    }
+    #${APP_ID} .prx-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #7bdcb5;
+      box-shadow: 0 0 0 2px rgba(123,220,181,0.2);
+    }
+    #${APP_ID} .prx-icon-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: var(--prx-radius-sm);
+      border: 1px solid var(--prx-border);
+      background: var(--prx-surface-2);
+      cursor: pointer;
+      user-select: none;
+    }
+    #${APP_ID} .prx-icon-btn:hover { filter: brightness(1.08); }
+    #${APP_ID} .prx-icon-btn:focus { outline: 2px solid var(--prx-focus); outline-offset: 1px; }
+    #${APP_ID} .prx-chevron { display: inline-block; transition: transform .18s ease; }
+    #${APP_ID} .prx-bar.collapsed .prx-chevron { transform: rotate(-90deg); }
+
+    #${APP_ID} .prx-controls {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 8px;
+      overflow: hidden;
+      max-height: 120px;                 /* アニメーション用最大高さ */
+      transition: max-height .18s ease, padding .18s ease;
+      padding-top: 2px;
+    }
+    #${APP_ID} .prx-bar.collapsed .prx-controls {
+      max-height: 0;
+      padding-top: 0;
+    }
+    #${APP_ID} input.prx-input {
+      width: 100%;
+      background: var(--prx-surface-2);
+      color: var(--prx-text);
+      border: 1px solid var(--prx-border);
+      border-radius: var(--prx-radius);
+      padding: 8px 10px;
+      outline: none;
+    }
+    #${APP_ID} input.prx-input::placeholder { color: var(--prx-text-dim); }
+    #${APP_ID} input.prx-input:focus {
+      border-color: var(--prx-focus);
+      box-shadow: 0 0 0 2px rgba(91,156,255,0.25);
+    }
+    #${APP_ID} .prx-btn {
+      background: var(--prx-surface-2);
+      color: var(--prx-text);
+      border: 1px solid var(--prx-border);
+      border-radius: var(--prx-radius);
+      padding: 8px 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #${APP_ID} .prx-btn:hover { filter: brightness(1.08); }
+    #${APP_ID} .prx-btn:focus { outline: 2px solid var(--prx-focus); outline-offset: 1px; }
   `;
   (document.head || document.documentElement).appendChild(style);
 
@@ -53,7 +145,7 @@
   host.id = APP_ID;
   Object.assign(host.style, {
     position: 'fixed',
-    inset: '0 0 0 auto',             // ← 右寄せ
+    inset: '0 0 0 auto',             // 右寄せ
     width: `${SPLIT_RATIO * 100}vw`,
     height: '100vh',
     background: BG,
@@ -63,49 +155,55 @@
     pointerEvents: 'auto',
     userSelect: 'none',
     boxSizing: 'border-box',
-    borderLeft: '1px solid #000',    // ← 右ペインなので左側に罫線
-    boxShadow: '-4px 0 8px rgba(0,0,0,0.3)' // ← ボード左側に薄い影
+    borderLeft: '1px solid #000',
+    boxShadow: '-4px 0 8px rgba(0,0,0,0.3)'
   });
 
-  // ツールバー
+  // ===== Notion風ツールバー（開閉対応） =====
   const bar = document.createElement('div');
-  Object.assign(bar.style, {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '8px',
-    background: '#202020',
-    borderBottom: '1px solid #000',
-    font: '12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
-  });
+  bar.className = 'prx-bar';
+  if (uiState.collapsed) bar.classList.add('collapsed');
 
-  const title = document.createElement('div');
-  title.textContent = 'Fabric Board (No Pan / No Zoom)';
-  Object.assign(title.style, { color: '#ddd', fontWeight: '600', marginRight: '8px' });
+  // 見出し行
+  const titleRow = document.createElement('div');
+  titleRow.className = 'prx-title-row';
+
+  const btnToggle = document.createElement('button');
+  btnToggle.className = 'prx-icon-btn';
+  btnToggle.title = '開閉';
+  const chev = document.createElement('span');
+  chev.className = 'prx-chevron';
+  chev.textContent = '▾';
+  btnToggle.appendChild(chev);
+
+  const pill = document.createElement('div');
+  pill.className = 'prx-pill';
+  const dot = document.createElement('span');
+  dot.className = 'prx-dot';
+  const title = document.createElement('span');
+  title.textContent = 'Fabric Board';
+  pill.append(dot, title);
+
+  // 操作行（開閉対象）
+  const controls = document.createElement('div');
+  controls.className = 'prx-controls';
 
   const urlInput = document.createElement('input');
   urlInput.type = 'text';
-  urlInput.placeholder = '画像URLを貼り付け（pinimg等推奨）';
-  Object.assign(urlInput.style, {
-    flex: '1',
-    minWidth: '120px',
-    background: '#2a2a2a',
-    color: '#eee',
-    border: '1px solid #3a3a3a',
-    borderRadius: '6px',
-    padding: '6px 8px',
-    outline: 'none'
-  });
+  urlInput.placeholder = '画像URLを貼り付け（pinimg など推奨）';
+  urlInput.className = 'prx-input';
 
   const btnAdd = document.createElement('button');
   btnAdd.textContent = 'URL追加';
-  stylizeButton(btnAdd);
+  btnAdd.className = 'prx-btn';
 
   const btnClear = document.createElement('button');
   btnClear.textContent = '全削除';
-  stylizeButton(btnClear);
+  btnClear.className = 'prx-btn';
 
-  bar.append(title, urlInput, btnAdd, btnClear);
+  titleRow.append(btnToggle, pill);
+  controls.append(urlInput, btnAdd, btnClear);
+  bar.append(titleRow, controls);
 
   // キャンバスラッパ
   const wrap = document.createElement('div');
@@ -123,30 +221,34 @@
   wrap.appendChild(elCanvas);
 
   host.append(bar, wrap);
-  // 安定のため body にアペンド（documentElement でもよいが body の方が置換に強いケースがある）
   (document.body || document.documentElement).appendChild(host);
 
-  // -------- Fabric.js 初期化 --------
+  // ===== 開閉ロジック =====
+  btnToggle.addEventListener('click', () => {
+    bar.classList.toggle('collapsed');
+    uiState.collapsed = bar.classList.contains('collapsed');
+    saveUIState(uiState);
+    // 開閉後にキャンバス再レイアウト（高さ変化対応）
+    queueMicrotask(resize);
+  });
+
+  // ===== Fabric.js 初期化 =====
   /** @type {fabric.Canvas} */
   const canvas = new fabric.Canvas(elCanvas, {
     backgroundColor: CANVAS_BG,
     selection: true,
     preserveObjectStacking: true,
     controlsAboveOverlay: true,
-    // 重要: ビューポート変形は使わない（= パン/ズーム無効）
-    viewportTransform: [1, 0, 0, 1, 0, 0]
+    viewportTransform: [1, 0, 0, 1, 0, 0] // パン/ズーム無効
   });
 
-  // Retina 対応
   canvas.enableRetinaScaling = true;
 
-  // 重要: ホイールズームを完全無効化
+  // ホイールズーム完全無効化
   canvas.on('mouse:wheel', (opt) => {
     opt.e.preventDefault();
     opt.e.stopPropagation();
   });
-
-  // 重要: パン（ドラッグでのビューポート移動）を実装しない
 
   // キャンバスのリサイズ
   const resize = () => {
@@ -165,10 +267,7 @@
       if (!img) return;
       img.set({ crossOrigin: 'anonymous' });
 
-      // 初期スケール: キャンバスに収まるように最大 90%
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
-
-      // 初期配置: 中央
       img.set({
         left: (canvas.getWidth() - img.getScaledWidth()) / 2,
         top: (canvas.getHeight() - img.getScaledHeight()) / 2,
@@ -179,7 +278,6 @@
       canvas.setActiveObject(img);
       canvas.requestRenderAll();
       scheduleSave();
-      // 可能ならデータURL埋め込みを試行（CORS許可時）
       tryEmbedImageAsDataURL(img).then((changed) => { if (changed) scheduleSave(); });
     }, { crossOrigin: 'anonymous' });
   }
@@ -206,9 +304,7 @@
       canvas.setActiveObject(img);
       canvas.requestRenderAll();
       scheduleSave();
-      // Blobは同一オリジン扱いなのでDataURL変換は不要だが、保存一貫性のために埋め込み直す
       tryEmbedImageAsDataURL(img).then(() => scheduleSave());
-      // revokeは少し遅らせる
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
   }
@@ -224,26 +320,23 @@
     return new Promise((resolve) => {
       try {
         const el = fimg.getElement();
-        // 一時キャンバスで draw → toDataURL を試みる
         const t = document.createElement('canvas');
         t.width = el.naturalWidth || el.videoWidth || el.width || fimg.width || 1;
         t.height = el.naturalHeight || el.videoHeight || el.height || fimg.height || 1;
         const ctx = t.getContext('2d');
         ctx.drawImage(el, 0, 0);
         const dataUrl = t.toDataURL('image/png');
-        // src を DataURL に置換（CORS対策）
         fimg.setSrc(dataUrl, () => {
           canvas.requestRenderAll();
           resolve(true);
         });
       } catch (e) {
-        // セキュリティエラー等（CORS未許可）は埋め込みを諦める
         resolve(false);
       }
     });
   }
 
-  // -------- ドラッグ & ドロップ --------
+  // -------- D&D --------
   const preventDefaults = (e) => { e.preventDefault(); e.stopPropagation(); };
   ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((ev) => {
     host.addEventListener(ev, preventDefaults, false);
@@ -253,12 +346,10 @@
   wrap.addEventListener('drop', (e) => {
     const dt = e.dataTransfer;
     if (!dt) return;
-
     if (dt.files && dt.files.length) {
       for (const f of dt.files) addImageFromFile(f);
       return;
     }
-    // URLテキスト
     const uriList = dt.getData('text/uri-list');
     const plain = dt.getData('text/plain');
     const text = (uriList || plain || '').trim();
@@ -269,16 +360,14 @@
     try { new URL(s); return true; } catch { return false; }
   }
 
-  // -------- クリップボード貼り付け（画像/URL）--------
+  // -------- クリップボード貼り付け --------
   window.addEventListener('paste', async (e) => {
-    // 入力中（URL欄など）は無視
     const target = e.target;
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
 
     const cd = e.clipboardData;
     if (!cd) return;
 
-    // 画像アイテム優先
     const items = Array.from(cd.items || []);
     for (const it of items) {
       if (it.kind === 'file' && it.type?.startsWith('image/')) {
@@ -286,17 +375,14 @@
         if (blob) { addImageFromBlob(blob); return; }
       }
     }
-    // テキストURL
     const text = cd.getData('text')?.trim();
     if (text && isProbablyUrl(text)) addImageFromUrl(text);
   });
 
   // -------- キーボードショートカット --------
   window.addEventListener('keydown', (e) => {
-    // 入力中は無効
     if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.isContentEditable)) return;
 
-    // Delete / Backspace で選択削除
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = canvas.getActiveObjects();
       if (active && active.length) {
@@ -307,7 +393,6 @@
         e.preventDefault();
       }
     }
-    // ズーム/パン系ショートカットは実装しない
   });
 
   // -------- ボタン動作 --------
@@ -339,12 +424,11 @@
   }
 
   async function saveNow() {
-    // 画像のDataURL化をできる範囲で確実に
     const imgs = canvas.getObjects('image');
     for (const img of imgs) {
       await tryEmbedImageAsDataURL(img).catch(() => {});
     }
-    const json = canvas.toJSON(['selectable']); // 必要なら拡張プロパティを追加
+    const json = canvas.toJSON(['selectable']);
     localStorage.setItem(LS_KEY, JSON.stringify({ v: 1, json }));
   }
 
@@ -368,19 +452,13 @@
     canvas.on(ev, scheduleSave);
   });
 
-  // -------- ユーティリティ: ボタン見た目 --------
-  function stylizeButton(btn) {
-    Object.assign(btn.style, {
-      background: '#2e2e2e',
-      color: '#eee',
-      border: '1px solid #3a3a3a',
-      borderRadius: '6px',
-      padding: '6px 10px',
-      cursor: 'pointer'
-    });
-    btn.addEventListener('mouseenter', () => btn.style.background = '#3a3a3a');
-    btn.addEventListener('mouseleave', () => btn.style.background = '#2e2e2e');
-    btn.addEventListener('focus', () => btn.style.outline = '2px solid #555');
-    btn.addEventListener('blur', () => btn.style.outline = 'none');
+  // -------- UI 状態 保存/復元 --------
+  function saveUIState(state) {
+    try { localStorage.setItem(LS_UI_KEY, JSON.stringify(state)); } catch {}
   }
+  function loadUIState() {
+    try { return JSON.parse(localStorage.getItem(LS_UI_KEY) || ''); } catch { return null; }
+  }
+
+  // -------- 補助（旧: 見た目 helpers は CSS に移行）--------
 })();
