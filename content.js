@@ -64,7 +64,7 @@
     userSelect: 'none',
     boxSizing: 'border-box',
     borderLeft: '1px solid #000',    // ← 右ペインなので左側に罫線
-    boxShadow: '-4px 0 8px rgba(0,0,0,0.5)' // ← ボード左側に薄い影
+    boxShadow: '-4px 0 8px rgba(0,0,0,0.3)' // ← ボード左側に薄い影
   });
 
   // ツールバー
