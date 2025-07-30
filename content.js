@@ -131,14 +131,57 @@
 
   const barEls = [title, urlInput, btnAdd, btnClear];
   let barHidden = false;
+
+  // ----- toolbar animation setup -----
+  let barFullHeight = 0;
+  const setupBarMeasurements = () => {
+    const prev = bar.style.height;
+    bar.style.height = 'auto';
+    barFullHeight = bar.scrollHeight;
+    bar.style.height = prev;
+  };
+
+  // Apply animation styles after DOM insertion
+  const initBarAnimation = () => {
+    setupBarMeasurements();
+    bar.style.height = barFullHeight + 'px';
+    bar.style.overflow = 'hidden';
+    bar.style.transition = 'height 0.25s ease';
+    for (const el of barEls) {
+      el.style.transition = 'opacity 0.25s ease, transform 0.25s ease';
+    }
+  };
+  const collapsedHeight = () => {
+    const st = getComputedStyle(bar);
+    return btnToggleBar.offsetHeight +
+      parseFloat(st.paddingTop) + parseFloat(st.paddingBottom);
+  };
+
   btnToggleBar.addEventListener('click', () => {
     barHidden = !barHidden;
-    for (const el of barEls) el.style.display = barHidden ? 'none' : '';
+    if (barHidden) {
+      for (const el of barEls) {
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(-6px)';
+        el.style.pointerEvents = 'none';
+      }
+      bar.style.height = collapsedHeight() + 'px';
+    } else {
+      for (const el of barEls) {
+        el.style.opacity = '1';
+        el.style.transform = 'translateY(0)';
+        el.style.pointerEvents = '';
+      }
+      setupBarMeasurements();
+      bar.style.height = barFullHeight + 'px';
+    }
     btnToggleBar.textContent = barHidden ? '\u25BC' : '\u25B2'; // ▼ : ▲
   });
 
   // 安定のため body にアペンド（documentElement でもよいが body の方が置換に強いケースがある）
   (document.body || document.documentElement).appendChild(host);
+  initBarAnimation();
+  new ResizeObserver(() => { if (!barHidden) setupBarMeasurements(); }).observe(bar);
 
   // -------- Fabric.js 初期化 --------
   /** @type {fabric.Canvas} */
