@@ -4,7 +4,28 @@
 (() => {
   'use strict';
   const APP_ID = 'prx-root-purefab';
-  if (document.getElementById(APP_ID)) return; // 多重起動防止
+  const STYLE_ID = APP_ID + '-style';
+
+  // ----- 重要: 既存ノードを必ずクリーンアップしてからマウント -----
+  // （通常リロード/SPA再描画/キャッシュ復元で古いノードが残っても毎回再構築する）
+  try {
+    const oldHost = document.getElementById(APP_ID);
+    if (oldHost && oldHost.parentNode) oldHost.parentNode.removeChild(oldHost);
+    const oldStyle = document.getElementById(STYLE_ID);
+    if (oldStyle && oldStyle.parentNode) oldStyle.parentNode.removeChild(oldStyle);
+  } catch (e) {
+    // 何もしない（安全側）
+  }
+
+  // 離脱時にも片付け（特に bfcache/復帰での不整合を抑える）
+  window.addEventListener('pagehide', () => {
+    try {
+      const n1 = document.getElementById(APP_ID);
+      if (n1 && n1.parentNode) n1.parentNode.removeChild(n1);
+      const n2 = document.getElementById(STYLE_ID);
+      if (n2 && n2.parentNode) n2.parentNode.removeChild(n2);
+    } catch {}
+  });
 
   // -------- 基本設定 --------
   const SPLIT_RATIO = 0.30;                  // 右 30%（ボード）/ 左 70%（Pinterest）
@@ -15,7 +36,7 @@
 
   // -------- スタイル注入（Pinterest側を 70% に）--------
   const style = document.createElement('style');
-  style.id = APP_ID + '-style';
+  style.id = STYLE_ID;
   style.textContent = `
     html { overflow-x: hidden !important; }
     /* 右側 30vw をボードが占有するため、本体は右余白を空ける */
@@ -23,7 +44,7 @@
     /* Pinterest が固定ヘッダー等で横幅を使い切る場合に備えて */
     [role="main"], #__PWS_ROOT__, #__PWS_ROOT__ > div { max-width: 100% !important; }
   `;
-  document.documentElement.appendChild(style);
+  (document.head || document.documentElement).appendChild(style);
 
   // -------- 右ペイン（ボード）DOM 構築 --------
   const host = document.createElement('div');
@@ -99,7 +120,8 @@
   wrap.appendChild(elCanvas);
 
   host.append(bar, wrap);
-  document.documentElement.appendChild(host);
+  // 安定のため body にアペンド（documentElement でもよいが body の方が置換に強いケースがある）
+  (document.body || document.documentElement).appendChild(host);
 
   // -------- Fabric.js 初期化 --------
   /** @type {fabric.Canvas} */
@@ -119,7 +141,6 @@
   canvas.on('mouse:wheel', (opt) => {
     opt.e.preventDefault();
     opt.e.stopPropagation();
-    // 何もしない（ズーム禁止）
   });
 
   // 重要: パン（ドラッグでのビューポート移動）を実装しない
@@ -220,7 +241,6 @@
   }
 
   // -------- ドラッグ & ドロップ --------
-  // ファイル/URLの両方に対応
   const preventDefaults = (e) => { e.preventDefault(); e.stopPropagation(); };
   ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((ev) => {
     host.addEventListener(ev, preventDefaults, false);
