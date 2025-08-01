@@ -188,7 +188,7 @@
   applyGlobalStyle(initialVisible);
   (document.head || document.documentElement).appendChild(style);
 
-  // -------- 右ペインDOM（Notion風ツールバー＋折りたたみ） --------
+  // -------- 右ペインDOM（トップバーなし／隠すボタンのみ） --------
   const host = document.createElement('div');
   host.id = APP_ID;
   Object.assign(host.style, {
@@ -209,29 +209,15 @@
     transition: 'transform 200ms ease'
   });
 
-  // Notion風トップバー
-  const topbar = document.createElement('div');
-  Object.assign(topbar.style, {
-    height: '44px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0 10px',
-    borderBottom: '1px solid #2f2f2f',
-    background: '#222',
-    color: '#ddd',
-    font: '13px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
-    flexShrink: '0'
-  });
-
-  const title = document.createElement('div');
-  title.textContent = 'Board';
-  Object.assign(title.style, { fontWeight: '600', letterSpacing: '.2px' });
-
+  // 隠すボタン（アイコンは変更しない）
   const hideBtn = document.createElement('button');
   hideBtn.type = 'button';
   hideBtn.textContent = ' ⟩⟩ ';
   Object.assign(hideBtn.style, {
+    position: 'absolute',
+    top: '8px',
+    right: '8px',
+    zIndex: String(Z + 1),
     border: '1px solid #3a3a3a',
     background: '#2a2a2a',
     color: '#ddd',
@@ -241,9 +227,6 @@
   });
   hideBtn.onmouseenter = () => hideBtn.style.background = '#313131';
   hideBtn.onmouseleave = () => hideBtn.style.background = '#2a2a2a';
-
-  topbar.append(hideBtn);
-  topbar.style.justifyContent = 'flex-end';
 
   const wrap = document.createElement('div');
   Object.assign(wrap.style, { position: 'relative', flex: '1', minHeight: '0', display: 'block', contain: 'strict' });
@@ -280,9 +263,9 @@
   const elCanvas = document.createElement('canvas');
   elCanvas.id = APP_ID + '-canvas';
   Object.assign(elCanvas.style, { display: 'block', willChange: 'transform' });
-  wrap.appendChild(elCanvas);
 
-  host.append(topbar, wrap);
+  wrap.appendChild(elCanvas);
+  host.append(hideBtn, wrap);
   (document.body || document.documentElement).appendChild(host);
 
   // 「開く」ピル（折りたたみ時のみ表示）
@@ -313,7 +296,6 @@
     applyGlobalStyle(visible);
     opener.style.display = visible ? 'none' : 'block';
     localStorage.setItem(LS_KEY_VIS, visible ? '1' : '0');
-    // 展開時はキャンバスをリサイズ
     if (visible) {
       setTimeout(() => { resize(); safeRender(); }, 210);
     }
@@ -354,17 +336,16 @@
 
   // ==== Pointer Capture（ワープ/ガタつき対策） ====
   const upper = canvas.upperCanvasEl;
-  upper.style.touchAction = 'none'; // タッチのブラウザパン抑止
+  upper.style.touchAction = 'none';
   upper.addEventListener('pointerdown', (ev) => { try { upper.setPointerCapture(ev.pointerId); } catch {} });
   upper.addEventListener('pointerup',     (ev) => { try { upper.releasePointerCapture(ev.pointerId); } catch {} });
   upper.addEventListener('pointercancel', (ev) => { try { upper.releasePointerCapture(ev.pointerId); } catch {} });
-  upper.addEventListener('lostpointercapture', () => { /* 必要なら状態リセット */ });
+  upper.addEventListener('lostpointercapture', () => {});
 
   let __pf_dragging__ = false;
   canvas.on('mouse:down', () => { __pf_dragging__ = true; document.body.style.userSelect = 'none'; });
   canvas.on('mouse:up',   () => { __pf_dragging__ = false; document.body.style.userSelect = ''; });
 
-  // 常に中心基準でスケールさせる & 既定原点を center に統一
   fabric.Object.prototype.centeredScaling = true;
   fabric.Object.prototype.originX = 'center';
   fabric.Object.prototype.originY = 'center';
@@ -429,8 +410,8 @@
   const Undo = (() => {
     const undoStack = [];
     const redoStack = [];
-    const batches = new Map(); // token -> { type, items:[{id,json,index}], remaining, done, timer }
-    let transformSnapshot = null; // { items:[{id, props}], afterProps? }
+    const batches = new Map();
+    let transformSnapshot = null;
 
     function clearRedo(){ redoStack.length = 0; }
 
@@ -443,7 +424,6 @@
     function beginBatch(type, expectedCount){
       const token = 'batch-' + Date.now() + '-' + Math.random().toString(36).slice(2);
       const b = { type, items:[], remaining: Math.max(1, expectedCount|0), done:false, timer:null };
-      // タイムアウトで自動確定（例：4秒）
       b.timer = setTimeout(() => finalizeBatch(token), 4000);
       batches.set(token, b);
       return token;
@@ -456,7 +436,6 @@
       clearTimeout(b.timer);
       b.timer = null;
       if (b.items.length){
-        // ADD バッチ：items は {id,json,index}
         push({ type: UNDO_TYPES.ADD, items: b.items.map(x => ({ id:x.id, json:x.json, index:x.index })) });
       }
       batches.delete(token);
@@ -473,7 +452,6 @@
       b.items.push(item);
       b.remaining = Math.max(0, b.remaining - 1);
       if (b.remaining === 0 && !b.done){
-        // 即時確定
         finalizeBatch(token);
       }
     }
@@ -483,7 +461,6 @@
       if (!act) { toast('これ以上戻せません'); return; }
 
       if (act.type === UNDO_TYPES.ADD){
-        // 追加 → 削除
         const removed = [];
         act.items.forEach(it => {
           const o = findById(it.id);
@@ -492,32 +469,27 @@
         canvas.discardActiveObject();
         safeRender();
         scheduleSave();
-        // Redo用（再追加に備え JSON を持つ）
         redoStack.push({ type: UNDO_TYPES.ADD, items: act.items });
         toast('追加を取り消しました');
         return;
       }
 
       if (act.type === UNDO_TYPES.REMOVE || act.type === UNDO_TYPES.AUTOLIMIT){
-        // 削除 → 復元
         await Promise.allSettled(act.objects.map(o => restoreImageFromJSON(o.json, o.index)));
         safeRender();
         scheduleSave();
-        // Redo用（再削除）
         redoStack.push(act);
         toast('削除を取り消しました');
         return;
       }
 
       if (act.type === UNDO_TYPES.TRANSFORM){
-        // 変形 → 元へ
         for (const it of act.before){
           const o = findById(it.id);
           if (o){ Object.assign(o, it.props); o.setCoords(); }
         }
         safeRender();
         scheduleSave();
-        // Redo用（after に進め直す）
         redoStack.push(act);
         toast('編集を取り消しました');
         return;
@@ -528,9 +500,7 @@
       const act = redoStack.pop();
       if (!act) { toast('これ以上やり直せません'); return; }
 
-      // 再適用し、undoStackへ積み直す（fromReplay=trueでRedoスタックのクリアを防ぐ）
       if (act.type === UNDO_TYPES.ADD){
-        // 再追加
         await Promise.allSettled(act.items.map(it => restoreImageFromJSON(it.json, it.index)));
         safeRender();
         scheduleSave();
@@ -540,7 +510,6 @@
       }
 
       if (act.type === UNDO_TYPES.REMOVE || act.type === UNDO_TYPES.AUTOLIMIT){
-        // 再削除
         const removed = [];
         for (const oinfo of act.objects){
           const id = oinfo.json?.prxId;
@@ -557,7 +526,6 @@
       }
 
       if (act.type === UNDO_TYPES.TRANSFORM){
-        // after に進める
         for (const it of act.after){
           const o = findById(it.id);
           if (o){ Object.assign(o, it.props); o.setCoords(); }
@@ -570,18 +538,15 @@
       }
     }
 
-    // 変形スナップショット
     function onPointerDown(){
       const sel = canvas.getActiveObjects() || [];
       if (!sel.length) { transformSnapshot = null; return; }
       transformSnapshot = {
         items: sel.map(o => ({ id: ensurePrxId(o), props: pickProps(o) }))
       };
-      // 変形中はキャッシュOFF
       fabric.Object.prototype.objectCaching = false;
     }
     function onPointerUp(){
-      // 変形終了でキャッシュON
       fabric.Object.prototype.objectCaching = true;
 
       if (!transformSnapshot) return;
@@ -598,8 +563,8 @@
       if (after.length){
         const action = {
           type: UNDO_TYPES.TRANSFORM,
-          before, // ここは「元に戻す」側
-          after   // ここは「やり直す」側
+          before,
+          after
         };
         push(action);
         safeRender();
@@ -612,17 +577,13 @@
       onPointerDown, onPointerUp,
       pushRemove(objects){ if (objects.length) push({ type: UNDO_TYPES.REMOVE, objects }); },
       pushAutoLimit(objects){ if (objects.length) push({ type: UNDO_TYPES.AUTOLIMIT, objects }); },
-      stacks(){ return { undoStack, redoStack, batches }; } // GC 用
+      stacks(){ return { undoStack, redoStack, batches }; }
     };
   })();
 
   // === Shift+Alt フリップ（上下/左右） ===
-  // 単一画像選択時、Shift+Alt を押してドラッグ開始:
-  //   - 最初の移動が縦優勢 → flipY トグル（上下反転）
-  //   - 最初の移動が横優勢 → flipX トグル（左右反転）
-  // ドラッグ中は lockMovementX/Y で移動させない。1ジェスチャにつき1回のみ。
   const FlipGesture = (() => {
-    const THRESH = 16; // 方向判定のしきい値(px)
+    const THRESH = 16;
     let active = false;
     let started = false;
     let obj = null;
@@ -644,7 +605,6 @@
 
       const sel = canvas.getActiveObjects();
       obj = sel[0];
-      // 移動ロック（ジェスチャ中は動かさない）
       prevLockX = !!obj.lockMovementX;
       prevLockY = !!obj.lockMovementY;
       obj.lockMovementX = true;
@@ -659,7 +619,6 @@
     function onMouseMove(opt){
       if (!active || !obj) return;
       const e = opt.e || {};
-      // 念のためデフォルト阻止（スクロール等）
       if (e.preventDefault) e.preventDefault();
 
       const dx = (e.clientX ?? startX) - startX;
@@ -670,13 +629,11 @@
         started = true;
 
         if (Math.abs(dy) >= Math.abs(dx)) {
-          // 縦優勢 → 上下反転
           obj.set('flipY', !obj.flipY);
           obj.setCoords();
           safeRender();
           toast('上下反転');
         } else {
-          // 横優勢 → 左右反転
           obj.set('flipX', !obj.flipX);
           obj.setCoords();
           safeRender();
@@ -688,7 +645,6 @@
     function onMouseUp(){
       if (!active) return;
       if (obj){
-        // ロック復元
         obj.lockMovementX = prevLockX;
         obj.lockMovementY = prevLockY;
       }
@@ -696,11 +652,10 @@
       obj = null;
     }
 
-    // 念のため、moving も抑止（他経路の移動をブロック）
     function onObjectMoving(opt){
       if (active && opt?.target){
-        opt.target.left = opt.target.left; // no-op
-        opt.target.top  = opt.target.top;  // no-op
+        opt.target.left = opt.target.left;
+        opt.target.top  = opt.target.top;
         if (opt.e?.preventDefault) opt.e.preventDefault();
       }
     }
@@ -718,7 +673,6 @@
     safeRender();
   };
   new ResizeObserver(resize).observe(wrap);
-  // 初期表示状態に応じてリサイズ
   if (initialVisible) resize();
 
   // === 画像上限制御 ===
@@ -735,7 +689,7 @@
 
     const removed = [];
     for (let i = 0; i < excess; i++) {
-      const list = canvas.getObjects('image'); // 先に追加されたものから削除
+      const list = canvas.getObjects('image');
       if (list[i]) {
         ensurePrxId(list[i]);
         removed.push(serializeForRemove(list[i]));
@@ -858,7 +812,7 @@
     const text    = (uriList || plain || '').trim();
     if (text && isProbablyUrl(text)) {
       if (!ensureCanAdd(1)) return;
-      addImageFromUrl(text, null); // 単発
+      addImageFromUrl(text, null);
     }
   });
 
@@ -940,24 +894,21 @@
     }
   }
 
-  // -------- キーボードショートカット（Delete/Backspace/Copy/Undo/Redo） --------
+  // -------- キーボードショートカット --------
   window.addEventListener('keydown', async (e) => {
     if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.isContentEditable)) return;
 
-    // Ctrl/⌘ + Z = Undo
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
       e.preventDefault();
       await Undo.undo();
       return;
     }
-    // Ctrl/⌘ + Shift + Z または Ctrl/⌘ + Y = Redo
     if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && (e.key === 'z' || e.key === 'Z')) || e.key === 'y' || e.key === 'Y')) {
       e.preventDefault();
       await Undo.redo();
       return;
     }
 
-    // Delete / Backspace = 削除（Undo対応）
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = canvas.getActiveObjects();
       if (active && active.length) {
@@ -976,7 +927,6 @@
       return;
     }
 
-    // Ctrl/⌘ + C = 画像コピー（単一選択のみ）
     if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
       const sel = canvas.getActiveObjects() || [];
       if (sel.length > 1) {
@@ -997,7 +947,7 @@
     }
   });
 
-  // 変形のUndo収集（+キャッシュ制御）
+  // 変形のUndo収集 + フリップジェスチャ
   canvas.on('mouse:down', (opt) => { Undo.onPointerDown(opt); FlipGesture.onMouseDown(opt); });
   canvas.on('mouse:move', (opt) => { FlipGesture.onMouseMove(opt); });
   canvas.on('mouse:up',   (opt) => { FlipGesture.onMouseUp(opt); Undo.onPointerUp(opt); });
@@ -1019,7 +969,7 @@
   async function saveNow() {
     try {
       const json = canvas.toJSON(CUSTOM_PROPS);
-      await saveBoardJSON({ v: 2, json }); // v2: IndexedDB 版
+      await saveBoardJSON({ v: 2, json });
     } catch (e) {
       console.warn('save board failed:', e);
       toast('保存に失敗しました', 1200);
@@ -1072,7 +1022,7 @@
         safeRender();
         enforceImageLimitAfterLoad();
         if (needResave) scheduleSave();
-        scheduleGc(); // 起動時にもGCを計画
+        scheduleGc();
       });
     });
   }
@@ -1082,32 +1032,29 @@
     canvas.on(ev, scheduleSave);
   });
 
-  // ===== 参照されないBlobのGC（アイドル時・分割実行） =====
-  const GC_GRACE_MS = 10 * 60 * 1000; // 10分猶予
-  const GC_INTERVAL_MIN = 2 * 60 * 1000; // 実行間隔（最短2分）
+  // ===== 参照されないBlobのGC =====
+  const GC_GRACE_MS = 10 * 60 * 1000;
+  const GC_INTERVAL_MIN = 2 * 60 * 1000;
   let lastGcAt = 0;
   let gcTimer = null;
 
   function collectReferencedBlobKeys(){
     const refs = new Set();
-    // Canvas 上
     for (const o of canvas.getObjects('image')){
       if (o.prxBlobKey) refs.add(o.prxBlobKey);
     }
-    // Undo/Redo スタック内（JSONに含まれる）
     const { undoStack, redoStack, batches } = Undo.stacks();
     const scanActs = (arr) => {
       for (const act of arr){
-        if (act.items){ // ADD
+        if (act.items){
           for (const it of act.items){ const k = it.json?.prxBlobKey; if (k) refs.add(k); }
         }
-        if (act.objects){ // REMOVE/AUTOLIMIT
+        if (act.objects){
           for (const oinfo of act.objects){ const k = oinfo.json?.prxBlobKey; if (k) refs.add(k); }
         }
       }
     };
     scanActs(undoStack); scanActs(redoStack);
-    // 進行中のバッチ（確定待ち）
     batches.forEach(b => {
       for (const it of b.items){ const k = it.json?.prxBlobKey; if (k) refs.add(k); }
     });
@@ -1117,7 +1064,7 @@
   async function runBlobGcChunked(limit = 200) {
     try{
       const refs = collectReferencedBlobKeys();
-      const rows = await idbListAll('images'); // {id, blob, type, created}
+      const rows = await idbListAll('images');
       const cutoff = Date.now() - GC_GRACE_MS;
 
       let i = 0;
@@ -1146,12 +1093,12 @@
 
   function scheduleGc(){
     const now = Date.now();
-    if (now - lastGcAt < GC_INTERVAL_MIN) return; // 頻度制御
+    if (now - lastGcAt < GC_INTERVAL_MIN) return;
     clearTimeout(gcTimer);
     gcTimer = setTimeout(() => { lastGcAt = Date.now(); runBlobGcChunked(); }, 1500);
   }
 
-  // ---- タブ可視状態で描画制御（強化） ----
+  // ---- タブ可視状態で描画制御 ----
   document.addEventListener('visibilitychange', () => {
     const hidden = document.hidden;
     canvas.renderOnAddRemove = !hidden;
@@ -1159,5 +1106,4 @@
   });
 
   // 将来拡張用フック
-  // クリックで URL 追加用の入力を後から足したくなった場合に備え、ここに空関数を残すだけ
 })();
