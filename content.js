@@ -240,6 +240,18 @@
   });
   canvas.enableRetinaScaling = true;
 
+  // ==== Pointer Capture（ワープ/ガタつき対策） ====
+  const upper = canvas.upperCanvasEl;
+  upper.style.touchAction = 'none'; // タッチのブラウザパン抑止
+  upper.addEventListener('pointerdown', (ev) => { try { upper.setPointerCapture(ev.pointerId); } catch {} });
+  upper.addEventListener('pointerup',     (ev) => { try { upper.releasePointerCapture(ev.pointerId); } catch {} });
+  upper.addEventListener('pointercancel', (ev) => { try { upper.releasePointerCapture(ev.pointerId); } catch {} });
+  upper.addEventListener('lostpointercapture', () => { /* 必要なら状態リセット */ });
+
+  let __pf_dragging__ = false;
+  canvas.on('mouse:down', () => { __pf_dragging__ = true; document.body.style.userSelect = 'none'; });
+  canvas.on('mouse:up',   () => { __pf_dragging__ = false; document.body.style.userSelect = ''; });
+
   // 常に中心基準でスケールさせる & 既定原点を center に統一
   fabric.Object.prototype.centeredScaling = true;
   fabric.Object.prototype.originX = 'center';
@@ -419,7 +431,6 @@
       if (act.type === UNDO_TYPES.REMOVE || act.type === UNDO_TYPES.AUTOLIMIT){
         // 再削除
         const removed = [];
-        // act.objects は JSON（元状態）なので、現在キャンバス上の同一 prxId を探して削除
         for (const oinfo of act.objects){
           const id = oinfo.json?.prxId;
           if (!id) continue;
