@@ -176,13 +176,32 @@
     return true; // 既定は表示
   })();
 
+  // ページのレイアウト更新を確実に走らせる
+  function nudgePageLayout(){
+    // 1) 強制リフロー（読み取り）
+    void document.body.offsetWidth;
+    // 2) resize イベントを複数回投げて Pinterest 側のレイアウトリスナーを起動
+    const fire = () => window.dispatchEvent(new Event('resize'));
+    fire();
+    setTimeout(fire, 120);
+    setTimeout(fire, 260);
+  }
+
   function applyGlobalStyle(visible){
     const mr = visible ? `${SPLIT_RATIO * 100}vw` : '0';
+    // data 属性で状態を明示（必要なら外部CSSから参照可能）
+    document.documentElement.setAttribute('data-prx-open', visible ? '1' : '0');
+
+    // 検索バー（Pinterest 上部バー）の幅：開いているときのみ 68%、閉じたら auto
+    const topBarWidthRule = visible
+        ? `.jzS.un8.C9i.TB_ { width: 68% !important; }`
+        : `.jzS.un8.C9i.TB_ { width: auto !important; }`;
+
     style.textContent = `
       html { overflow-x: hidden !important; }
       body { margin-right: ${mr} !important; transition: margin-right 200ms ease; }
       [role="main"], #__PWS_ROOT__, #__PWS_ROOT__ > div { max-width: 100% !important; }
-      .jzS.un8.C9i.TB_ { width: 68% !important; }
+      ${topBarWidthRule}
     `;
   }
   applyGlobalStyle(initialVisible);
@@ -204,7 +223,7 @@
     userSelect: 'none',
     boxSizing: 'border-box',
     borderLeft: '1px solid #000',
-    boxShadow: '-4px 0 8px rgba(0,0,0,0.3)',
+    boxShadow: '-4px 0 8px rgba(0,0,0,0.3)', // 影を消したい場合はこの行を削除 or コメントアウト
     transform: initialVisible ? 'translateX(0)' : 'translateX(100%)',
     transition: 'transform 200ms ease'
   });
@@ -221,11 +240,11 @@
     border: '1px solid #3a3a3a',
     background: '#222',          // opener と同じ
     color: '#ddd',
-    width: '32px',               // 正円にする
+    width: '32px',
     height: '32px',
     padding: '0',
     borderRadius: '999px',       // 正円
-    display: 'inline-flex',      // 中央寄せ
+    display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
     boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
@@ -302,9 +321,10 @@
     applyGlobalStyle(visible);
     opener.style.display = visible ? 'none' : 'block';
     localStorage.setItem(LS_KEY_VIS, visible ? '1' : '0');
-    if (visible) {
-      setTimeout(() => { resize(); safeRender(); }, 210);
-    }
+
+    // ボードのアニメ後にキャンバスとページ側の再レイアウトを同期
+    const after = () => { resize(); safeRender(); nudgePageLayout(); };
+    setTimeout(after, 210);
   }
   hideBtn.addEventListener('click', () => setBoardVisible(false));
   opener.addEventListener('click', () => setBoardVisible(true));
