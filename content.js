@@ -190,7 +190,7 @@
   });
 
   const wrap = document.createElement('div');
-  Object.assign(wrap.style, { position: 'relative', flex: '1', minHeight: '0', display: 'block' });
+  Object.assign(wrap.style, { position: 'relative', flex: '1', minHeight: '0', display: 'block', contain: 'strict' }); // contain 追加
 
   // 右下トースト
   const toast = (() => {
@@ -223,7 +223,7 @@
 
   const elCanvas = document.createElement('canvas');
   elCanvas.id = APP_ID + '-canvas';
-  Object.assign(elCanvas.style, { display: 'block' });
+  Object.assign(elCanvas.style, { display: 'block', willChange: 'transform' }); // willChange 追加
   wrap.appendChild(elCanvas);
 
   host.append(wrap);
@@ -239,6 +239,26 @@
     viewportTransform: [1, 0, 0, 1, 0, 0] // パン/ズーム無効
   });
   canvas.enableRetinaScaling = true;
+
+  // === rAF 集約レンダ ===
+  let __rafId = 0;
+  function safeRender() {
+    if (__rafId) return;
+    __rafId = requestAnimationFrame(() => {
+      __rafId = 0;
+      canvas.requestRenderAll();
+    });
+  }
+
+  // === まとめ処理（描画一時停止） ===
+  async function withRenderSuspended(fn) {
+    const prev = canvas.renderOnAddRemove;
+    canvas.renderOnAddRemove = false;
+    try { await fn(); } finally {
+      canvas.renderOnAddRemove = prev;
+      safeRender();
+    }
+  }
 
   // ==== Pointer Capture（ワープ/ガタつき対策） ====
   const upper = canvas.upperCanvasEl;
@@ -295,7 +315,7 @@
           const objUrl = URL.createObjectURL(blob);
           return new Promise((resolve)=> {
             fabric.Image.fromURL(objUrl, (img)=>{
-              if (img){ applyCommon(img); canvas.insertAt(img, Math.max(0,index), true); canvas.requestRenderAll(); }
+              if (img){ applyCommon(img); canvas.insertAt(img, Math.max(0,index), true); safeRender(); }
               setTimeout(()=>{ try{ URL.revokeObjectURL(objUrl); }catch{} }, 2000);
               resolve(img || null);
             }, { crossOrigin: 'anonymous' });
@@ -306,7 +326,7 @@
     if (srcUrl){
       return new Promise((resolve)=> {
         fabric.Image.fromURL(srcUrl, (img)=>{
-          if (img){ applyCommon(img); canvas.insertAt(img, Math.max(0,index), true); canvas.requestRenderAll(); }
+          if (img){ applyCommon(img); canvas.insertAt(img, Math.max(0,index), true); safeRender(); }
           resolve(img || null);
         }, { crossOrigin: 'anonymous' });
       });
@@ -370,7 +390,6 @@
       const act = undoStack.pop();
       if (!act) { toast('これ以上戻せません'); return; }
 
-      // 逆操作を redoStack に積む
       if (act.type === UNDO_TYPES.ADD){
         // 追加 → 削除
         const removed = [];
@@ -379,7 +398,7 @@
           if (o){ removed.push(serializeForRemove(o)); canvas.remove(o); }
         });
         canvas.discardActiveObject();
-        canvas.requestRenderAll();
+        safeRender();
         scheduleSave();
         // Redo用（再追加に備え JSON を持つ）
         redoStack.push({ type: UNDO_TYPES.ADD, items: act.items });
@@ -390,7 +409,7 @@
       if (act.type === UNDO_TYPES.REMOVE || act.type === UNDO_TYPES.AUTOLIMIT){
         // 削除 → 復元
         await Promise.allSettled(act.objects.map(o => restoreImageFromJSON(o.json, o.index)));
-        canvas.requestRenderAll();
+        safeRender();
         scheduleSave();
         // Redo用（再削除）
         redoStack.push(act);
@@ -404,7 +423,7 @@
           const o = findById(it.id);
           if (o){ Object.assign(o, it.props); o.setCoords(); }
         }
-        canvas.requestRenderAll();
+        safeRender();
         scheduleSave();
         // Redo用（after に進め直す）
         redoStack.push(act);
@@ -421,7 +440,7 @@
       if (act.type === UNDO_TYPES.ADD){
         // 再追加
         await Promise.allSettled(act.items.map(it => restoreImageFromJSON(it.json, it.index)));
-        canvas.requestRenderAll();
+        safeRender();
         scheduleSave();
         push({ type: UNDO_TYPES.ADD, items: act.items }, { fromReplay:true });
         toast('追加をやり直しました');
@@ -438,7 +457,7 @@
           if (o){ removed.push(serializeForRemove(o)); canvas.remove(o); }
         }
         canvas.discardActiveObject();
-        canvas.requestRenderAll();
+        safeRender();
         scheduleSave();
         push({ type: act.type, objects: removed }, { fromReplay:true });
         toast('削除をやり直しました');
@@ -451,7 +470,7 @@
           const o = findById(it.id);
           if (o){ Object.assign(o, it.props); o.setCoords(); }
         }
-        canvas.requestRenderAll();
+        safeRender();
         scheduleSave();
         push(act, { fromReplay:true });
         toast('編集をやり直しました');
@@ -466,8 +485,13 @@
       transformSnapshot = {
         items: sel.map(o => ({ id: ensurePrxId(o), props: pickProps(o) }))
       };
+      // 変形中はキャッシュOFF
+      fabric.Object.prototype.objectCaching = false;
     }
     function onPointerUp(){
+      // 変形終了でキャッシュON
+      fabric.Object.prototype.objectCaching = true;
+
       if (!transformSnapshot) return;
       const before = transformSnapshot.items;
       const after = [];
@@ -486,6 +510,7 @@
           after   // ここは「やり直す」側
         };
         push(action);
+        safeRender();
       }
     }
 
@@ -506,7 +531,7 @@
   const resize = () => {
     const rect = wrap.getBoundingClientRect();
     canvas.setDimensions({ width: rect.width, height: rect.height }, { backstoreOnly: false });
-    canvas.requestRenderAll();
+    safeRender();
   };
   new ResizeObserver(resize).observe(wrap);
   resize();
@@ -535,7 +560,7 @@
     if (removed.length){
       Undo.pushAutoLimit(removed);
       toast(`画像は最大 ${MAX_IMAGES} 枚までに制限しました`);
-      canvas.requestRenderAll();
+      safeRender();
       scheduleSave();
     }
   }
@@ -574,7 +599,7 @@
         canvas.add(img);
         canvas.setActiveObject(img);
         Undo.recordAdd(img, batchToken);
-        canvas.requestRenderAll();
+        safeRender();
         scheduleSave();
         setTimeout(() => { try { URL.revokeObjectURL(urlObj); } catch {} }, 2000);
       }, { crossOrigin: 'anonymous' });
@@ -590,7 +615,7 @@
       canvas.add(img);
       canvas.setActiveObject(img);
       Undo.recordAdd(img, batchToken);
-      canvas.requestRenderAll();
+      safeRender();
       scheduleSave();
     }, { crossOrigin: 'anonymous' });
   }
@@ -615,7 +640,7 @@
       canvas.add(img);
       canvas.setActiveObject(img);
       Undo.recordAdd(img, batchToken);
-      canvas.requestRenderAll();
+      safeRender();
       scheduleSave();
       setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 2000);
     }, { crossOrigin: 'anonymous' });
@@ -637,7 +662,9 @@
       if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
       const files = Array.from(dt.files).slice(0, capacity);
       const token = Undo.beginBatch('add', files.length);
-      for (const f of files) addImageFromFile(f, token);
+      withRenderSuspended(async () => {
+        for (const f of files) addImageFromFile(f, token);
+      });
       return;
     }
 
@@ -666,10 +693,12 @@
       if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
       const take = items.slice(0, capacity);
       const token = Undo.beginBatch('add', take.length);
-      for (const it of take) {
-        const blob = it.getAsFile();
-        if (blob) addImageFromBlob(blob, token);
-      }
+      withRenderSuspended(async () => {
+        for (const it of take) {
+          const blob = it.getAsFile();
+          if (blob) addImageFromBlob(blob, token);
+        }
+      });
       return;
     }
 
@@ -681,42 +710,49 @@
   });
 
   // ====== 画像コピー（Ctrl/⌘+C） ======
+  let __copyBusy = false;
   async function copyActiveImageToClipboard() {
     const sel = canvas.getActiveObjects() || [];
     if (sel.length !== 1) return false;
     const obj = sel[0];
     if (obj?.type !== 'image') return false;
+    if (__copyBusy) return false;
+    __copyBusy = true;
 
-    return new Promise((resolve, reject) => {
-      obj.clone((cloned) => {
-        try {
-          const multiplier = 2;
-          const bbox = cloned.getBoundingRect(true, true);
-          const w = Math.max(1, Math.round(bbox.width  * multiplier));
-          const h = Math.max(1, Math.round(bbox.height * multiplier));
-          const sc = new fabric.StaticCanvas(null, { width: w, height: h });
+    try {
+      return await new Promise((resolve, reject) => {
+        obj.clone((cloned) => {
+          try {
+            const multiplier = 2;
+            const bbox = cloned.getBoundingRect(true, true);
+            const w = Math.max(1, Math.round(bbox.width  * multiplier));
+            const h = Math.max(1, Math.round(bbox.height * multiplier));
+            const sc = new fabric.StaticCanvas(null, { width: w, height: h });
 
-          cloned.set({ originX: 'center', originY: 'center', left: w / 2, top:  h / 2, selectable: false });
-          cloned.scaleX = (cloned.scaleX || 1) * multiplier;
-          cloned.scaleY = (cloned.scaleY || 1) * multiplier;
+            cloned.set({ originX: 'center', originY: 'center', left: w / 2, top:  h / 2, selectable: false });
+            cloned.scaleX = (cloned.scaleX || 1) * multiplier;
+            cloned.scaleY = (cloned.scaleY || 1) * multiplier;
 
-          sc.add(cloned);
-          sc.renderAll();
+            sc.add(cloned);
+            sc.renderAll();
 
-          sc.lowerCanvasEl.toBlob(async (blob) => {
-            try {
-              if (!blob) throw new Error('blob is null');
-              await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
-              resolve(true);
-            } catch (err) {
-              reject(err);
-            } finally {
-              sc.dispose();
-            }
-          }, 'image/png');
-        } catch (e) { reject(e); }
+            sc.lowerCanvasEl.toBlob(async (blob) => {
+              try {
+                if (!blob) throw new Error('blob is null');
+                await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
+                resolve(true);
+              } catch (err) {
+                reject(err);
+              } finally {
+                sc.dispose();
+              }
+            }, 'image/png');
+          } catch (e) { reject(e); }
+        });
       });
-    });
+    } finally {
+      __copyBusy = false;
+    }
   }
 
   // -------- キーボードショートカット（Delete/Backspace/Copy/Undo/Redo） --------
@@ -748,7 +784,7 @@
         });
         canvas.discardActiveObject();
         if (removed.length) Undo.pushRemove(removed);
-        canvas.requestRenderAll();
+        safeRender();
         scheduleSave();
         e.preventDefault();
       }
@@ -776,7 +812,7 @@
     }
   });
 
-  // 変形のUndo収集
+  // 変形のUndo収集（+キャッシュ制御）
   canvas.on('mouse:down', () => Undo.onPointerDown());
   canvas.on('mouse:up',   () => Undo.onPointerUp());
 
@@ -784,9 +820,12 @@
   let saveTimer = null;
   function scheduleSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-      await saveNow();
-      scheduleGc(); // 保存のたびにGCをスケジュール
+    saveTimer = setTimeout(() => {
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(async () => { await saveNow(); scheduleGc(); }, { timeout: 1500 });
+      } else {
+        saveNow().then(scheduleGc);
+      }
     }, 400);
   }
 
@@ -843,7 +882,7 @@
       }
 
       Promise.allSettled(reviveQueue).then(() => {
-        canvas.renderAll();
+        safeRender();
         enforceImageLimitAfterLoad();
         if (needResave) scheduleSave();
         scheduleGc(); // 起動時にもGCを計画
@@ -856,7 +895,7 @@
     canvas.on(ev, scheduleSave);
   });
 
-  // ===== 参照されないBlobのGC =====
+  // ===== 参照されないBlobのGC（アイドル時・分割実行） =====
   const GC_GRACE_MS = 10 * 60 * 1000; // 10分猶予
   const GC_INTERVAL_MIN = 2 * 60 * 1000; // 実行間隔（最短2分）
   let lastGcAt = 0;
@@ -878,7 +917,6 @@
         if (act.objects){ // REMOVE/AUTOLIMIT
           for (const oinfo of act.objects){ const k = oinfo.json?.prxBlobKey; if (k) refs.add(k); }
         }
-        if (act.before){ /* transform: 画像のBlobKeyは関与しない */ }
       }
     };
     scanActs(undoStack); scanActs(redoStack);
@@ -889,34 +927,49 @@
     return refs;
   }
 
-  function scheduleGc(){
-    const now = Date.now();
-    if (now - lastGcAt < GC_INTERVAL_MIN) return; // 頻度制御
-    clearTimeout(gcTimer);
-    gcTimer = setTimeout(runBlobGc, 1500); // 少し待ってから
-  }
-
-  async function runBlobGc(){
-    lastGcAt = Date.now();
+  async function runBlobGcChunked(limit = 200) {
     try{
       const refs = collectReferencedBlobKeys();
       const rows = await idbListAll('images'); // {id, blob, type, created}
       const cutoff = Date.now() - GC_GRACE_MS;
-      let deleted = 0;
-      for (const r of rows){
-        const id = r.id;
-        const created = r.created || 0;
-        if (!refs.has(id) && created < cutoff){
-          // 参照なし かつ 猶予済み
-          await idbDelete('images', id);
-          deleted++;
+
+      let i = 0;
+      async function step(deadline) {
+        let count = 0;
+        while (i < rows.length && (count < limit) && (deadline?.timeRemaining?.() > 5 || !deadline)) {
+          const r = rows[i++];
+          const id = r.id;
+          const created = r.created || 0;
+          if (!refs.has(id) && created < cutoff) {
+            try { await idbDelete('images', id); } catch {}
+          }
+          count++;
+        }
+        if (i < rows.length) {
+          if ('requestIdleCallback' in window) requestIdleCallback(step);
+          else setTimeout(() => step(), 0);
         }
       }
-      if (deleted) console.debug('[PureFab/GC] deleted blobs:', deleted);
-    }catch(e){
+      if ('requestIdleCallback' in window) requestIdleCallback(step);
+      else setTimeout(() => step(), 0);
+    } catch(e) {
       console.warn('[PureFab/GC] failed:', e);
     }
   }
+
+  function scheduleGc(){
+    const now = Date.now();
+    if (now - lastGcAt < GC_INTERVAL_MIN) return; // 頻度制御
+    clearTimeout(gcTimer);
+    gcTimer = setTimeout(() => { lastGcAt = Date.now(); runBlobGcChunked(); }, 1500);
+  }
+
+  // ---- タブ可視状態で描画制御（強化） ----
+  document.addEventListener('visibilitychange', () => {
+    const hidden = document.hidden;
+    canvas.renderOnAddRemove = !hidden;
+    if (!hidden) safeRender();
+  });
 
   // -------- 将来拡張用フック --------
   // クリックで URL 追加用の入力を後から足したくなった場合に備え、ここに空関数を残すだけ
