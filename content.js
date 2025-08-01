@@ -1,18 +1,20 @@
-// Pinterest Split + Fabric Board (localStorage, no pan, no zoom, RIGHT board, toolbar removed, max 8 images)
-// 前提: fabric.min.js を manifest で content.js より先に読み込み済み
+// Pinterest Split + Fabric Board
+// (localStorage, no pan, no zoom, RIGHT board, toolbar removed, max 8 images, centered scaling)
+// 前提: fabric.min.js を manifest の content_scripts で本ファイルより先に読み込み済み
 
 (() => {
   'use strict';
-  const APP_ID = 'prx-root-purefab';
+
+  const APP_ID   = 'prx-root-purefab';
   const STYLE_ID = APP_ID + '-style';
 
   // ----- 既存ノードのクリーンアップ -----
   try {
-    const oldHost = document.getElementById(APP_ID);
+    const oldHost  = document.getElementById(APP_ID);
     if (oldHost && oldHost.parentNode) oldHost.parentNode.removeChild(oldHost);
     const oldStyle = document.getElementById(STYLE_ID);
     if (oldStyle && oldStyle.parentNode) oldStyle.parentNode.removeChild(oldStyle);
-  } catch (e) {}
+  } catch {}
 
   // 離脱時にも片付け（bfcache/復帰の不整合抑制）
   window.addEventListener('pagehide', () => {
@@ -26,13 +28,13 @@
 
   // -------- 基本設定 --------
   const SPLIT_RATIO = 0.30;                  // 右 30%（ボード）/ 左 70%（Pinterest）
-  const LS_KEY = 'prx.fabric.board.json.v1'; // Canvas JSON 保存
-  const Z = 2147483600;
-  const BG = '#1c1c1c';
-  const CANVAS_BG = '#2a2a2a';
-  const MAX_IMAGES = 8; // ★ 画像枚数の上限
+  const LS_KEY      = 'prx.fabric.board.json.v1'; // Canvas JSON 保存
+  const Z           = 2147483600;
+  const BG          = '#1c1c1c';
+  const CANVAS_BG   = '#2a2a2a';
+  const MAX_IMAGES  = 8;  // 画像枚数の上限
 
-  // -------- スタイル注入（Pinterest側レイアウト調整のみ） --------
+  // -------- スタイル注入（Pinterest 側を 70%、右に 30% のボード） --------
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
@@ -51,7 +53,7 @@
   host.id = APP_ID;
   Object.assign(host.style, {
     position: 'fixed',
-    inset: '0 0 0 auto',             // 右寄せ
+    inset: '0 0 0 auto',          // 右寄せ
     width: `${SPLIT_RATIO * 100}vw`,
     height: '100vh',
     background: BG,
@@ -123,6 +125,11 @@
   });
   canvas.enableRetinaScaling = true;
 
+  // 常に中心基準でスケールさせる & 既定原点を center に統一
+  fabric.Object.prototype.centeredScaling = true;
+  fabric.Object.prototype.originX = 'center';
+  fabric.Object.prototype.originY = 'center';
+
   // ホイールズーム完全無効化
   canvas.on('mouse:wheel', (opt) => {
     opt.e.preventDefault();
@@ -133,13 +140,14 @@
   const resize = () => {
     const rect = wrap.getBoundingClientRect();
     canvas.setDimensions({ width: rect.width, height: rect.height }, { backstoreOnly: false });
-    canvas.renderAll();
+    canvas.requestRenderAll();
   };
   new ResizeObserver(resize).observe(wrap);
   resize();
 
   // === 画像上限制御 ===
   const getImageCount = () => canvas.getObjects('image').length;
+
   function ensureCanAdd(need = 1) {
     const left = MAX_IMAGES - getImageCount();
     if (left < need) {
@@ -148,13 +156,13 @@
     }
     return true;
   }
+
   function enforceImageLimitAfterLoad() {
     const imgs = canvas.getObjects('image');
     if (imgs.length <= MAX_IMAGES) return;
     const excess = imgs.length - MAX_IMAGES;
     for (let i = 0; i < excess; i++) {
-      // 先に追加されたものから削除（スタック下層）
-      const list = canvas.getObjects('image');
+      const list = canvas.getObjects('image'); // 先に追加されたものから削除（スタック下層）
       if (list[i]) canvas.remove(list[i]);
     }
     canvas.requestRenderAll();
@@ -170,12 +178,17 @@
     fabric.Image.fromURL(clean, (img) => {
       if (!img) return;
       if (!ensureCanAdd(1)) return; // 同時投入等の競合に備え再チェック
+
       img.set({ crossOrigin: 'anonymous' });
 
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
+
+      // 原点 center + キャンバス中心配置
       img.set({
-        left: (canvas.getWidth() - img.getScaledWidth()) / 2,
-        top: (canvas.getHeight() - img.getScaledHeight()) / 2,
+        originX: 'center',
+        originY: 'center',
+        left: canvas.getWidth() / 2,
+        top: canvas.getHeight() / 2,
         selectable: true
       });
 
@@ -205,10 +218,13 @@
 
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
       img.set({
-        left: (canvas.getWidth() - img.getScaledWidth()) / 2,
-        top: (canvas.getHeight() - img.getScaledHeight()) / 2,
+        originX: 'center',
+        originY: 'center',
+        left: canvas.getWidth() / 2,
+        top: canvas.getHeight() / 2,
         selectable: true
       });
+
       canvas.add(img);
       canvas.setActiveObject(img);
       canvas.requestRenderAll();
@@ -230,7 +246,7 @@
       try {
         const el = fimg.getElement();
         const t = document.createElement('canvas');
-        t.width = el.naturalWidth || el.videoWidth || el.width || fimg.width || 1;
+        t.width  = el.naturalWidth  || el.videoWidth  || el.width  || fimg.width  || 1;
         t.height = el.naturalHeight || el.videoHeight || el.height || fimg.height || 1;
         const ctx = t.getContext('2d');
         ctx.drawImage(el, 0, 0);
@@ -266,8 +282,8 @@
     }
 
     const uriList = dt.getData('text/uri-list');
-    const plain = dt.getData('text/plain');
-    const text = (uriList || plain || '').trim();
+    const plain   = dt.getData('text/plain');
+    const text    = (uriList || plain || '').trim();
     if (text && isProbablyUrl(text)) {
       if (!ensureCanAdd(1)) return;
       addImageFromUrl(text);
@@ -304,7 +320,7 @@
     }
   });
 
-  // -------- キーボードショートカット（Deleteで削除） --------
+  // -------- キーボードショートカット（Delete/Backspace で削除） --------
   window.addEventListener('keydown', (e) => {
     if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.isContentEditable)) return;
 
@@ -332,7 +348,7 @@
     for (const img of imgs) {
       await tryEmbedImageAsDataURL(img).catch(() => {});
     }
-    const json = canvas.toJSON(['selectable']);
+    const json = canvas.toJSON(['selectable', 'originX', 'originY', 'centeredScaling']);
     localStorage.setItem(LS_KEY, JSON.stringify({ v: 1, json }));
   }
 
@@ -342,10 +358,25 @@
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (!parsed?.json) return;
+
       canvas.loadFromJSON(parsed.json, () => {
-        canvas.renderAll();
         // 読み込み直後に上限を適用（9枚以上保存されていた場合の整理）
+        // かつ、旧データの left/top 原点を center に正規化
+        const imgs = canvas.getObjects('image');
+        for (const img of imgs) {
+          // 旧データでは originX/Y が 'left'/'top' のことがある
+          if (img.originX !== 'center' || img.originY !== 'center') {
+            const cx = img.left + img.getScaledWidth() / 2;
+            const cy = img.top  + img.getScaledHeight() / 2;
+            img.set({ originX: 'center', originY: 'center', left: cx, top: cy });
+          }
+          img.centeredScaling = true; // 念のため明示
+          img.setCoords();
+        }
+
+        canvas.renderAll();
         enforceImageLimitAfterLoad();
+        scheduleSave(); // 正規化した場合は保存
       });
     } catch (e) {
       console.warn('Failed to load canvas JSON:', e);
