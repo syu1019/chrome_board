@@ -39,11 +39,8 @@
   style.id = STYLE_ID;
   style.textContent = `
     html { overflow-x: hidden !important; }
-    /* 右側 30vw をボードが占有するため、本体は右余白を空ける */
     body { margin-right: ${SPLIT_RATIO * 100}vw !important; }
-    /* Pinterest 側の最大幅/固定ヘッダー調整の保険 */
     [role="main"], #__PWS_ROOT__, #__PWS_ROOT__ > div { max-width: 100% !important; }
-    /* 必要に応じた特定コンテナ幅調整（環境依存。不要なら削除可） */
     .jzS.un8.C9i.TB_ { width: 68% !important; }
   `;
   (document.head || document.documentElement).appendChild(style);
@@ -53,7 +50,7 @@
   host.id = APP_ID;
   Object.assign(host.style, {
     position: 'fixed',
-    inset: '0 0 0 auto',          // 右寄せ
+    inset: '0 0 0 auto',
     width: `${SPLIT_RATIO * 100}vw`,
     height: '100vh',
     background: BG,
@@ -162,7 +159,7 @@
     if (imgs.length <= MAX_IMAGES) return;
     const excess = imgs.length - MAX_IMAGES;
     for (let i = 0; i < excess; i++) {
-      const list = canvas.getObjects('image'); // 先に追加されたものから削除（スタック下層）
+      const list = canvas.getObjects('image'); // 先に追加されたものから削除
       if (list[i]) canvas.remove(list[i]);
     }
     canvas.requestRenderAll();
@@ -173,17 +170,15 @@
   // -------- 画像追加ユーティリティ --------
   function addImageFromUrl(url) {
     if (!url) return;
-    if (!ensureCanAdd(1)) return; // 事前チェック
+    if (!ensureCanAdd(1)) return;
     const clean = url.trim();
     fabric.Image.fromURL(clean, (img) => {
       if (!img) return;
-      if (!ensureCanAdd(1)) return; // 同時投入等の競合に備え再チェック
-
+      if (!ensureCanAdd(1)) return;
       img.set({ crossOrigin: 'anonymous' });
 
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
 
-      // 原点 center + キャンバス中心配置
       img.set({
         originX: 'center',
         originY: 'center',
@@ -272,7 +267,6 @@
     const dt = e.dataTransfer;
     if (!dt) return;
 
-    // ファイル複数投入は空き分だけ受ける
     if (dt.files && dt.files.length) {
       let capacity = MAX_IMAGES - getImageCount();
       if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
@@ -320,10 +314,66 @@
     }
   });
 
-  // -------- キーボードショートカット（Delete/Backspace で削除） --------
-  window.addEventListener('keydown', (e) => {
+  // ====== 画像コピー（Ctrl/⌘+C）追加 ======
+  async function copyActiveImageToClipboard() {
+    const sel = canvas.getActiveObjects() || [];
+    if (sel.length !== 1) return false;                 // 複数やゼロは不可
+    const obj = sel[0];
+    if (obj?.type !== 'image') return false;            // 画像以外は対象外
+
+    // オブジェクトをクローンして専用 StaticCanvas に描画し、そのPNGをクリップボードへ
+    return new Promise((resolve, reject) => {
+      obj.clone((cloned) => {
+        try {
+          // 高解像度化したい場合は multiplier を上げる（2 程度が無難）
+          const multiplier = 2;
+
+          // クローンの外接矩形を取得（トランスフォーム込み）
+          const bbox = cloned.getBoundingRect(true, true);
+          const w = Math.max(1, Math.round(bbox.width  * multiplier));
+          const h = Math.max(1, Math.round(bbox.height * multiplier));
+
+          // 描画用 StaticCanvas
+          const sc = new fabric.StaticCanvas(null, { width: w, height: h });
+
+          // 中央配置 & スケールを反映。倍率分スケーリング。
+          cloned.set({
+            originX: 'center',
+            originY: 'center',
+            left: w / 2,
+            top:  h / 2,
+            selectable: false
+          });
+          cloned.scaleX = (cloned.scaleX || 1) * multiplier;
+          cloned.scaleY = (cloned.scaleY || 1) * multiplier;
+
+          sc.add(cloned);
+          sc.renderAll();
+
+          // PNG へ変換して Async Clipboard API で書き込み
+          sc.lowerCanvasEl.toBlob(async (blob) => {
+            try {
+              if (!blob) throw new Error('blob is null');
+              await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
+              resolve(true);
+            } catch (err) {
+              reject(err);
+            } finally {
+              sc.dispose();
+            }
+          }, 'image/png');
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+  }
+
+  // -------- キーボードショートカット（Delete/Backspace/Copy） --------
+  window.addEventListener('keydown', async (e) => {
     if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.isContentEditable)) return;
 
+    // Delete / Backspace = 削除
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = canvas.getActiveObjects();
       if (active && active.length) {
@@ -333,6 +383,29 @@
         scheduleSave();
         e.preventDefault();
       }
+      return;
+    }
+
+    // Ctrl/⌘ + C = 画像コピー（単一選択のみ）
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+      const sel = canvas.getActiveObjects() || [];
+      if (sel.length > 1) {
+        // 複数選択時はコピーさせない
+        e.preventDefault();
+        toast('複数選択中はコピーできません（1枚だけ選択してください）');
+        return;
+      }
+      if (sel.length === 1 && sel[0]?.type === 'image') {
+        e.preventDefault();
+        try {
+          await copyActiveImageToClipboard();
+          toast('画像をクリップボードへコピーしました');
+        } catch (err) {
+          console.warn('clipboard write failed:', err);
+          toast('コピーに失敗しました（ブラウザ設定や権限を確認してください）', 2000);
+        }
+      }
+      // 0件や画像以外は既定挙動（Pinterest側のコピー等）に任せる
     }
   });
 
@@ -360,23 +433,20 @@
       if (!parsed?.json) return;
 
       canvas.loadFromJSON(parsed.json, () => {
-        // 読み込み直後に上限を適用（9枚以上保存されていた場合の整理）
-        // かつ、旧データの left/top 原点を center に正規化
         const imgs = canvas.getObjects('image');
         for (const img of imgs) {
-          // 旧データでは originX/Y が 'left'/'top' のことがある
           if (img.originX !== 'center' || img.originY !== 'center') {
             const cx = img.left + img.getScaledWidth() / 2;
             const cy = img.top  + img.getScaledHeight() / 2;
             img.set({ originX: 'center', originY: 'center', left: cx, top: cy });
           }
-          img.centeredScaling = true; // 念のため明示
+          img.centeredScaling = true;
           img.setCoords();
         }
 
         canvas.renderAll();
         enforceImageLimitAfterLoad();
-        scheduleSave(); // 正規化した場合は保存
+        scheduleSave();
       });
     } catch (e) {
       console.warn('Failed to load canvas JSON:', e);

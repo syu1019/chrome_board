@@ -3,6 +3,7 @@
   "description": "Pinterest画面を3:7に分割し、左にFabric.jsでボードを表示します。",
   "version": "1.0.0",
   "manifest_version": 3,
+  "permissions": ["clipboardWrite"],
   "content_scripts": [
     {
       "matches": [
