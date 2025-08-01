@@ -524,6 +524,98 @@
     };
   })();
 
+  // === Shift+Alt フリップ（上下/左右） ===
+  // 単一画像選択時、Shift+Alt を押してドラッグ開始:
+  //   - 最初の移動が縦優勢 → flipY トグル（上下反転）
+  //   - 最初の移動が横優勢 → flipX トグル（左右反転）
+  // ドラッグ中は lockMovementX/Y で移動させない。1ジェスチャにつき1回のみ。
+  const FlipGesture = (() => {
+    const THRESH = 16; // 方向判定のしきい値(px)
+    let active = false;
+    let started = false;
+    let obj = null;
+    let startX = 0, startY = 0;
+    let prevLockX = false, prevLockY = false;
+
+    function canStart(e){
+      if (!e.shiftKey || !e.altKey) return false;
+      const sel = canvas.getActiveObjects() || [];
+      if (sel.length !== 1) return false;
+      const o = sel[0];
+      if (!o || o.type !== 'image') return false;
+      return true;
+    }
+
+    function onMouseDown(opt){
+      const e = opt.e || {};
+      if (!canStart(e)) { active = false; obj = null; return; }
+
+      const sel = canvas.getActiveObjects();
+      obj = sel[0];
+      // 移動ロック（ジェスチャ中は動かさない）
+      prevLockX = !!obj.lockMovementX;
+      prevLockY = !!obj.lockMovementY;
+      obj.lockMovementX = true;
+      obj.lockMovementY = true;
+
+      startX = e.clientX;
+      startY = e.clientY;
+      active = true;
+      started = false;
+    }
+
+    function onMouseMove(opt){
+      if (!active || !obj) return;
+      const e = opt.e || {};
+      // 念のためデフォルト阻止（スクロール等）
+      if (e.preventDefault) e.preventDefault();
+
+      const dx = (e.clientX ?? startX) - startX;
+      const dy = (e.clientY ?? startY) - startY;
+
+      if (!started){
+        if (Math.abs(dx) < THRESH && Math.abs(dy) < THRESH) return;
+        started = true;
+
+        if (Math.abs(dy) >= Math.abs(dx)) {
+          // 縦優勢 → 上下反転
+          obj.set('flipY', !obj.flipY);
+          obj.setCoords();
+          safeRender();
+          toast('上下反転');
+        } else {
+          // 横優勢 → 左右反転
+          obj.set('flipX', !obj.flipX);
+          obj.setCoords();
+          safeRender();
+          toast('左右反転');
+        }
+      }
+    }
+
+    function onMouseUp(){
+      if (!active) return;
+      if (obj){
+        // ロック復元
+        obj.lockMovementX = prevLockX;
+        obj.lockMovementY = prevLockY;
+      }
+      active = false;
+      obj = null;
+    }
+
+    // 念のため、moving も抑止（他経路の移動をブロック）
+    function onObjectMoving(opt){
+      if (active && opt?.target){
+        opt.target.left = opt.target.left; // no-op
+        opt.target.top  = opt.target.top;  // no-op
+        if (opt.e?.preventDefault) opt.e.preventDefault();
+      }
+    }
+
+    return { onMouseDown, onMouseMove, onMouseUp, onObjectMoving };
+  })();
+
   // ホイールズーム完全無効化
   canvas.on('mouse:wheel', (opt) => { opt.e.preventDefault(); opt.e.stopPropagation(); });
 
@@ -813,8 +905,10 @@
   });
 
   // 変形のUndo収集（+キャッシュ制御）
-  canvas.on('mouse:down', () => Undo.onPointerDown());
-  canvas.on('mouse:up',   () => Undo.onPointerUp());
+  canvas.on('mouse:down', (opt) => { Undo.onPointerDown(opt); FlipGesture.onMouseDown(opt); });
+  canvas.on('mouse:move', (opt) => { FlipGesture.onMouseMove(opt); });
+  canvas.on('mouse:up',   (opt) => { FlipGesture.onMouseUp(opt); Undo.onPointerUp(opt); });
+  canvas.on('object:moving', (opt) => { FlipGesture.onObjectMoving(opt); });
 
   // -------- 永続化（IndexedDB） + GC --------
   let saveTimer = null;
