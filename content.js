@@ -8,6 +8,43 @@
   const APP_ID   = 'prx-root-purefab';
   const STYLE_ID = APP_ID + '-style';
 
+  // ==== 二重起動ガード（同一ドキュメントでの再実行を抑止）====
+  if (window.__PRX_PUREFAB_ACTIVE__) {
+    console.debug('[PureFab] already active, skip init.');
+    return;
+  }
+  window.__PRX_PUREFAB_ACTIVE__ = true;
+
+  // ---- 外部エラーフック（発生源の特定補助）----
+  // 'alphabetical'（正は 'alphabetic'）や 'uiState' 参照前エラーを捕捉して発生ファイル/行/stack を出力
+  (function setupErrorTaps() {
+    const tag = '%c[PureFab/ErrorTap]';
+    const sty = 'color:#0bf';
+
+    window.addEventListener('error', (e) => {
+      const msg = String(e.message || '');
+      if (msg.includes('alphabetical') || msg.includes('uiState')) {
+        console.group(tag, sty);
+        console.log('message :', msg);
+        console.log('source  :', e.filename, 'line:', e.lineno, 'col:', e.colno);
+        if (e.error && e.error.stack) console.log('stack   :\n' + e.error.stack);
+        console.groupEnd();
+      }
+    });
+
+    window.addEventListener('unhandledrejection', (e) => {
+      const reason = e.reason;
+      const msg = String((reason && (reason.message || reason)) || '');
+      if (msg.includes('alphabetical') || msg.includes('uiState')) {
+        console.group(tag, sty);
+        console.log('message :', msg);
+        // 一部の Promise 例外は stack に filename 情報が含まれる
+        if (reason && reason.stack) console.log('stack   :\n' + reason.stack);
+        console.groupEnd();
+      }
+    });
+  })();
+
   // ----- 既存ノードのクリーンアップ -----
   try {
     const oldHost  = document.getElementById(APP_ID);
@@ -16,15 +53,19 @@
     if (oldStyle && oldStyle.parentNode) oldStyle.parentNode.removeChild(oldStyle);
   } catch {}
 
-  // 離脱時にも片付け（bfcache/復帰の不整合抑制）
-  window.addEventListener('pagehide', () => {
+  // 離脱時にも片付け（bfcache/復帰の不整合抑制）＋フラグ解除
+  const __pf_cleanup__ = () => {
     try {
       const n1 = document.getElementById(APP_ID);
       if (n1 && n1.parentNode) n1.parentNode.removeChild(n1);
       const n2 = document.getElementById(STYLE_ID);
       if (n2 && n2.parentNode) n2.parentNode.removeChild(n2);
     } catch {}
-  });
+    // このページの寿命が終わる時にフラグ解除
+    try { delete window.__PRX_PUREFAB_ACTIVE__; } catch {}
+  };
+  window.addEventListener('pagehide', __pf_cleanup__, { once: true });
+  window.addEventListener('unload',   __pf_cleanup__, { once: true });
 
   // -------- 基本設定 --------
   const SPLIT_RATIO = 0.30;                  // 右 30%（ボード）/ 左 70%（Pinterest）
@@ -34,7 +75,7 @@
   const CANVAS_BG   = '#2a2a2a';
   const MAX_IMAGES  = 8;  // 画像枚数の上限
 
-  // -------- スタイル注入（Pinterest 側を 70%、右に 30% のボード） --------
+  // -------- スタイル注入 --------
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
@@ -64,7 +105,6 @@
     boxShadow: '-4px 0 8px rgba(0,0,0,0.3)'
   });
 
-  // キャンバスラッパ
   const wrap = document.createElement('div');
   Object.assign(wrap.style, {
     position: 'relative',
@@ -73,7 +113,7 @@
     display: 'block'
   });
 
-  // 右下トースト（簡易通知）
+  // 右下トースト
   const toast = (() => {
     let tm, el;
     return (msg, ms = 1400) => {
@@ -102,7 +142,6 @@
     };
   })();
 
-  // <canvas>
   const elCanvas = document.createElement('canvas');
   elCanvas.id = APP_ID + '-canvas';
   Object.assign(elCanvas.style, { display: 'block' });
@@ -245,7 +284,7 @@
         t.height = el.naturalHeight || el.videoHeight || el.height || fimg.height || 1;
         const ctx = t.getContext('2d');
         ctx.drawImage(el, 0, 0);
-        const dataUrl = t.toDataURL('image/png');
+        const dataUrl = t.toDataURL('image/png'); // 元のまま（ここは今回変更しない）
         fimg.setSrc(dataUrl, () => {
           canvas.requestRenderAll();
           resolve(true);
@@ -321,22 +360,16 @@
     const obj = sel[0];
     if (obj?.type !== 'image') return false;            // 画像以外は対象外
 
-    // オブジェクトをクローンして専用 StaticCanvas に描画し、そのPNGをクリップボードへ
     return new Promise((resolve, reject) => {
       obj.clone((cloned) => {
         try {
-          // 高解像度化したい場合は multiplier を上げる（2 程度が無難）
           const multiplier = 2;
-
-          // クローンの外接矩形を取得（トランスフォーム込み）
           const bbox = cloned.getBoundingRect(true, true);
           const w = Math.max(1, Math.round(bbox.width  * multiplier));
           const h = Math.max(1, Math.round(bbox.height * multiplier));
 
-          // 描画用 StaticCanvas
           const sc = new fabric.StaticCanvas(null, { width: w, height: h });
 
-          // 中央配置 & スケールを反映。倍率分スケーリング。
           cloned.set({
             originX: 'center',
             originY: 'center',
@@ -350,7 +383,6 @@
           sc.add(cloned);
           sc.renderAll();
 
-          // PNG へ変換して Async Clipboard API で書き込み
           sc.lowerCanvasEl.toBlob(async (blob) => {
             try {
               if (!blob) throw new Error('blob is null');
@@ -390,7 +422,6 @@
     if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
       const sel = canvas.getActiveObjects() || [];
       if (sel.length > 1) {
-        // 複数選択時はコピーさせない
         e.preventDefault();
         toast('複数選択中はコピーできません（1枚だけ選択してください）');
         return;
@@ -405,7 +436,6 @@
           toast('コピーに失敗しました（ブラウザ設定や権限を確認してください）', 2000);
         }
       }
-      // 0件や画像以外は既定挙動（Pinterest側のコピー等）に任せる
     }
   });
 
@@ -454,7 +484,6 @@
   }
   loadFromLocalStorage();
 
-  // Fabric 変更イベントで自動保存
   ['object:added', 'object:modified', 'object:removed'].forEach(ev => {
     canvas.on(ev, scheduleSave);
   });
