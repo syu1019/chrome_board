@@ -7,6 +7,7 @@
 
   const APP_ID   = 'prx-root-purefab';
   const STYLE_ID = APP_ID + '-style';
+  const UI_OPEN_BTN_ID = APP_ID + '-opener';
 
   // ==== 二重起動ガード ====
   if (window.__PRX_PUREFAB_ACTIVE__) {
@@ -47,6 +48,8 @@
     if (oldHost && oldHost.parentNode) oldHost.parentNode.removeChild(oldHost);
     const oldStyle = document.getElementById(STYLE_ID);
     if (oldStyle && oldStyle.parentNode) oldStyle.parentNode.removeChild(oldStyle);
+    const oldOpen  = document.getElementById(UI_OPEN_BTN_ID);
+    if (oldOpen && oldOpen.parentNode) oldOpen.parentNode.removeChild(oldOpen);
   } catch {}
 
   // 離脱時にも片付け＋フラグ解除
@@ -56,6 +59,8 @@
       if (n1 && n1.parentNode) n1.parentNode.removeChild(n1);
       const n2 = document.getElementById(STYLE_ID);
       if (n2 && n2.parentNode) n2.parentNode.removeChild(n2);
+      const n3 = document.getElementById(UI_OPEN_BTN_ID);
+      if (n3 && n3.parentNode) n3.parentNode.removeChild(n3);
     } catch {}
     try { delete window.__PRX_PUREFAB_ACTIVE__; } catch {}
   };
@@ -68,6 +73,7 @@
   const BG          = '#1c1c1c';
   const CANVAS_BG   = '#2a2a2a';
   const MAX_IMAGES  = 8;
+  const LS_KEY_VIS  = APP_ID + ':visible';
 
   // ==== IndexedDB ラッパ ====
   const DB_NAME = 'prx_purefab_db';
@@ -159,18 +165,30 @@
     return row ? row.blob : null;
   }
 
-  // -------- スタイル注入 --------
+  // -------- スタイル注入（可変：可視/非表示で body margin を切替） --------
   const style = document.createElement('style');
   style.id = STYLE_ID;
-  style.textContent = `
-    html { overflow-x: hidden !important; }
-    body { margin-right: ${SPLIT_RATIO * 100}vw !important; }
-    [role="main"], #__PWS_ROOT__, #__PWS_ROOT__ > div { max-width: 100% !important; }
-    .jzS.un8.C9i.TB_ { width: 68% !important; }
-  `;
+
+  const initialVisible = (() => {
+    const v = localStorage.getItem(LS_KEY_VIS);
+    if (v === '0') return false;
+    if (v === '1') return true;
+    return true; // 既定は表示
+  })();
+
+  function applyGlobalStyle(visible){
+    const mr = visible ? `${SPLIT_RATIO * 100}vw` : '0';
+    style.textContent = `
+      html { overflow-x: hidden !important; }
+      body { margin-right: ${mr} !important; transition: margin-right 200ms ease; }
+      [role="main"], #__PWS_ROOT__, #__PWS_ROOT__ > div { max-width: 100% !important; }
+      .jzS.un8.C9i.TB_ { width: 68% !important; }
+    `;
+  }
+  applyGlobalStyle(initialVisible);
   (document.head || document.documentElement).appendChild(style);
 
-  // -------- 右ペインDOM --------
+  // -------- 右ペインDOM（Notion風ツールバー＋折りたたみ） --------
   const host = document.createElement('div');
   host.id = APP_ID;
   Object.assign(host.style, {
@@ -186,11 +204,48 @@
     userSelect: 'none',
     boxSizing: 'border-box',
     borderLeft: '1px solid #000',
-    boxShadow: '-4px 0 8px rgba(0,0,0,0.3)'
+    boxShadow: '-4px 0 8px rgba(0,0,0,0.3)',
+    transform: initialVisible ? 'translateX(0)' : 'translateX(100%)',
+    transition: 'transform 200ms ease'
   });
 
+  // Notion風トップバー
+  const topbar = document.createElement('div');
+  Object.assign(topbar.style, {
+    height: '44px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '0 10px',
+    borderBottom: '1px solid #2f2f2f',
+    background: '#222',
+    color: '#ddd',
+    font: '13px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+    flexShrink: '0'
+  });
+
+  const title = document.createElement('div');
+  title.textContent = 'Board';
+  Object.assign(title.style, { fontWeight: '600', letterSpacing: '.2px' });
+
+  const hideBtn = document.createElement('button');
+  hideBtn.type = 'button';
+  hideBtn.textContent = '⟩ 隠す';
+  Object.assign(hideBtn.style, {
+    border: '1px solid #3a3a3a',
+    background: '#2a2a2a',
+    color: '#ddd',
+    padding: '6px 10px',
+    borderRadius: '8px',
+    cursor: 'pointer'
+  });
+  hideBtn.onmouseenter = () => hideBtn.style.background = '#313131';
+  hideBtn.onmouseleave = () => hideBtn.style.background = '#2a2a2a';
+
+  topbar.append(title, hideBtn);
+
   const wrap = document.createElement('div');
-  Object.assign(wrap.style, { position: 'relative', flex: '1', minHeight: '0', display: 'block', contain: 'strict' }); // contain 追加
+  Object.assign(wrap.style, { position: 'relative', flex: '1', minHeight: '0', display: 'block', contain: 'strict' });
 
   // 右下トースト
   const toast = (() => {
@@ -223,11 +278,47 @@
 
   const elCanvas = document.createElement('canvas');
   elCanvas.id = APP_ID + '-canvas';
-  Object.assign(elCanvas.style, { display: 'block', willChange: 'transform' }); // willChange 追加
+  Object.assign(elCanvas.style, { display: 'block', willChange: 'transform' });
   wrap.appendChild(elCanvas);
 
-  host.append(wrap);
+  host.append(topbar, wrap);
   (document.body || document.documentElement).appendChild(host);
+
+  // 「開く」ピル（折りたたみ時のみ表示）
+  const opener = document.createElement('button');
+  opener.id = UI_OPEN_BTN_ID;
+  opener.textContent = '⟨ ボードを開く';
+  Object.assign(opener.style, {
+    position: 'fixed',
+    right: '12px',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    zIndex: String(Z),
+    border: '1px solid #3a3a3a',
+    background: '#222',
+    color: '#ddd',
+    padding: '8px 12px',
+    borderRadius: '999px',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+    cursor: 'pointer',
+    display: initialVisible ? 'none' : 'block'
+  });
+  opener.onmouseenter = () => opener.style.background = '#2a2a2a';
+  opener.onmouseleave = () => opener.style.background = '#222';
+  document.body.appendChild(opener);
+
+  function setBoardVisible(visible){
+    host.style.transform = visible ? 'translateX(0)' : 'translateX(100%)';
+    applyGlobalStyle(visible);
+    opener.style.display = visible ? 'none' : 'block';
+    localStorage.setItem(LS_KEY_VIS, visible ? '1' : '0');
+    // 展開時はキャンバスをリサイズ
+    if (visible) {
+      setTimeout(() => { resize(); safeRender(); }, 210);
+    }
+  }
+  hideBtn.addEventListener('click', () => setBoardVisible(false));
+  opener.addEventListener('click', () => setBoardVisible(true));
 
   // ===== Fabric.js 初期化 =====
   /** @type {fabric.Canvas} */
@@ -626,7 +717,8 @@
     safeRender();
   };
   new ResizeObserver(resize).observe(wrap);
-  resize();
+  // 初期表示状態に応じてリサイズ
+  if (initialVisible) resize();
 
   // === 画像上限制御 ===
   const getImageCount = () => canvas.getObjects('image').length;
@@ -1065,6 +1157,6 @@
     if (!hidden) safeRender();
   });
 
-  // -------- 将来拡張用フック --------
+  // 将来拡張用フック
   // クリックで URL 追加用の入力を後から足したくなった場合に備え、ここに空関数を残すだけ
 })();
