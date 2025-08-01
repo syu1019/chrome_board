@@ -1,5 +1,43 @@
+これはchrome拡張ですこの対応をして
+```
+QuotaExceededError: ... 'prx.fabric.board.json.v1' exceeded the quota.
+   意味：localStorage の容量（一般的に 5MB 前後/オリジン）を超えました。
+
+原因：コードで 画像を DataURL(PNG) にエンベッドして JSON 保存しています（tryEmbedImageAsDataURL）。PNG は重く、数枚で5MB超えます。
+
+影響：保存失敗 → 復元できない可能性。
+
+推奨対応（本命）：IndexedDB + Blob 保存に移行（容量が桁違いに大きく現実的）。
+```
+
+```manifest.json
+{
+  "name": "Pinterest Split + Fabric Board",
+  "description": "Pinterest画面を3:7に分割し、左にFabric.jsでボードを表示します。",
+  "version": "1.0.0",
+  "manifest_version": 3,
+  "permissions": ["clipboardWrite"],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.pinterest.com/*",
+        "http://*.pinterest.com/*",
+        "https://*.pinterest.jp/*",
+        "http://*.pinterest.jp/*"
+      ],
+      "run_at": "document_end",
+      "js": [
+        "fabric.min.js",
+        "content.js"
+      ]
+    }
+  ]
+}
+```
+
+```content.js
 // Pinterest Split + Fabric Board
-// (IndexedDB persists: images as Blob, board JSON in 'boards'; no pan, no zoom, RIGHT board, toolbar removed, max 8 images, centered scaling)
+// (localStorage, no pan, no zoom, RIGHT board, toolbar removed, max 8 images, centered scaling)
 // 前提: fabric.min.js を manifest の content_scripts で本ファイルより先に読み込み済み
 
 (() => {
@@ -8,7 +46,7 @@
   const APP_ID   = 'prx-root-purefab';
   const STYLE_ID = APP_ID + '-style';
 
-  // ==== 二重起動ガード ====
+  // ==== 二重起動ガード（同一ドキュメントでの再実行を抑止）====
   if (window.__PRX_PUREFAB_ACTIVE__) {
     console.debug('[PureFab] already active, skip init.');
     return;
@@ -16,9 +54,11 @@
   window.__PRX_PUREFAB_ACTIVE__ = true;
 
   // ---- 外部エラーフック（発生源の特定補助）----
+  // 'alphabetical'（正は 'alphabetic'）や 'uiState' 参照前エラーを捕捉して発生ファイル/行/stack を出力
   (function setupErrorTaps() {
     const tag = '%c[PureFab/ErrorTap]';
     const sty = 'color:#0bf';
+
     window.addEventListener('error', (e) => {
       const msg = String(e.message || '');
       if (msg.includes('alphabetical') || msg.includes('uiState')) {
@@ -29,12 +69,14 @@
         console.groupEnd();
       }
     });
+
     window.addEventListener('unhandledrejection', (e) => {
       const reason = e.reason;
       const msg = String((reason && (reason.message || reason)) || '');
       if (msg.includes('alphabetical') || msg.includes('uiState')) {
         console.group(tag, sty);
         console.log('message :', msg);
+        // 一部の Promise 例外は stack に filename 情報が含まれる
         if (reason && reason.stack) console.log('stack   :\n' + reason.stack);
         console.groupEnd();
       }
@@ -49,7 +91,7 @@
     if (oldStyle && oldStyle.parentNode) oldStyle.parentNode.removeChild(oldStyle);
   } catch {}
 
-  // 離脱時にも片付け＋フラグ解除
+  // 離脱時にも片付け（bfcache/復帰の不整合抑制）＋フラグ解除
   const __pf_cleanup__ = () => {
     try {
       const n1 = document.getElementById(APP_ID);
@@ -57,6 +99,7 @@
       const n2 = document.getElementById(STYLE_ID);
       if (n2 && n2.parentNode) n2.parentNode.removeChild(n2);
     } catch {}
+    // このページの寿命が終わる時にフラグ解除
     try { delete window.__PRX_PUREFAB_ACTIVE__; } catch {}
   };
   window.addEventListener('pagehide', __pf_cleanup__, { once: true });
@@ -64,86 +107,11 @@
 
   // -------- 基本設定 --------
   const SPLIT_RATIO = 0.30;                  // 右 30%（ボード）/ 左 70%（Pinterest）
-  const LS_KEY      = 'prx.fabric.board.json.v1'; // 旧 localStorage キー（移行用）
+  const LS_KEY      = 'prx.fabric.board.json.v1'; // Canvas JSON 保存
   const Z           = 2147483600;
   const BG          = '#1c1c1c';
   const CANVAS_BG   = '#2a2a2a';
-  const MAX_IMAGES  = 8;
-
-  // ==== IndexedDB ラッパ ====
-  const DB_NAME = 'prx_purefab_db';
-  const DB_VER  = 1;
-  let   __db;
-
-  function idbOpen() {
-    if (__db) return Promise.resolve(__db);
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, DB_VER);
-      req.onupgradeneeded = (ev) => {
-        const db = ev.target.result;
-        if (!db.objectStoreNames.contains('images')) {
-          db.createObjectStore('images', { keyPath: 'id' }); // {id, blob, type, created}
-        }
-        if (!db.objectStoreNames.contains('boards')) {
-          db.createObjectStore('boards', { keyPath: 'id' }); // {id, json, updated}
-        }
-      };
-      req.onsuccess = () => { __db = req.result; resolve(__db); };
-      req.onerror   = () => reject(req.error);
-    });
-  }
-
-  async function idbPut(store, value) {
-    const db  = await idbOpen();
-    return new Promise((resolve, reject) => {
-      const tx  = db.transaction(store, 'readwrite');
-      tx.oncomplete = () => resolve(true);
-      tx.onerror    = () => reject(tx.error);
-      tx.objectStore(store).put(value);
-    });
-  }
-
-  async function idbGet(store, key) {
-    const db  = await idbOpen();
-    return new Promise((resolve, reject) => {
-      const tx  = db.transaction(store, 'readonly');
-      tx.onerror = () => reject(tx.error);
-      const req = tx.objectStore(store).get(key);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror   = () => reject(req.error);
-    });
-  }
-
-  async function idbDelete(store, key) {
-    const db  = await idbOpen();
-    return new Promise((resolve, reject) => {
-      const tx  = db.transaction(store, 'readwrite');
-      tx.oncomplete = () => resolve(true);
-      tx.onerror    = () => reject(tx.error);
-      tx.objectStore(store).delete(key);
-    });
-  }
-
-  async function saveBoardJSON(json) {
-    const data = { id: 'main', json, updated: Date.now() };
-    await idbPut('boards', data);
-  }
-
-  async function loadBoardJSON() {
-    const row = await idbGet('boards', 'main');
-    return row ? row.json : null;
-  }
-
-  async function saveImageBlob(blob) {
-    const id = (crypto?.randomUUID && crypto.randomUUID()) || ('img-' + Date.now() + '-' + Math.random().toString(36).slice(2));
-    await idbPut('images', { id, blob, type: blob.type || 'application/octet-stream', created: Date.now() });
-    return id;
-  }
-
-  async function getImageBlob(id) {
-    const row = await idbGet('images', id);
-    return row ? row.blob : null;
-  }
+  const MAX_IMAGES  = 8;  // 画像枚数の上限
 
   // -------- スタイル注入 --------
   const style = document.createElement('style');
@@ -156,7 +124,7 @@
   `;
   (document.head || document.documentElement).appendChild(style);
 
-  // -------- 右ペイン（ボード）DOM --------
+  // -------- 右ペイン（ボード）DOM 構築 --------
   const host = document.createElement('div');
   host.id = APP_ID;
   Object.assign(host.style, {
@@ -176,7 +144,12 @@
   });
 
   const wrap = document.createElement('div');
-  Object.assign(wrap.style, { position: 'relative', flex: '1', minHeight: '0', display: 'block' });
+  Object.assign(wrap.style, {
+    position: 'relative',
+    flex: '1',
+    minHeight: '0',
+    display: 'block'
+  });
 
   // 右下トースト
   const toast = (() => {
@@ -248,11 +221,16 @@
 
   // === 画像上限制御 ===
   const getImageCount = () => canvas.getObjects('image').length;
+
   function ensureCanAdd(need = 1) {
     const left = MAX_IMAGES - getImageCount();
-    if (left < need) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return false; }
+    if (left < need) {
+      toast(`画像は最大 ${MAX_IMAGES} 枚までです`);
+      return false;
+    }
     return true;
   }
+
   function enforceImageLimitAfterLoad() {
     const imgs = canvas.getObjects('image');
     if (imgs.length <= MAX_IMAGES) return;
@@ -266,9 +244,67 @@
     toast(`画像は最大 ${MAX_IMAGES} 枚までに制限しました`);
   }
 
-  // -------- 画像追加ユーティリティ（IndexedDB保存対応） --------
-  // custom properties to persist in JSON
-  const CUSTOM_PROPS = ['selectable','originX','originY','centeredScaling','prxBlobKey','prxSrcUrl'];
+  // -------- 画像追加ユーティリティ --------
+  function addImageFromUrl(url) {
+    if (!url) return;
+    if (!ensureCanAdd(1)) return;
+    const clean = url.trim();
+    fabric.Image.fromURL(clean, (img) => {
+      if (!img) return;
+      if (!ensureCanAdd(1)) return;
+      img.set({ crossOrigin: 'anonymous' });
+
+      fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
+
+      img.set({
+        originX: 'center',
+        originY: 'center',
+        left: canvas.getWidth() / 2,
+        top: canvas.getHeight() / 2,
+        selectable: true
+      });
+
+      canvas.add(img);
+      canvas.setActiveObject(img);
+      canvas.requestRenderAll();
+      scheduleSave();
+      tryEmbedImageAsDataURL(img).then((changed) => { if (changed) scheduleSave(); });
+    }, { crossOrigin: 'anonymous' });
+  }
+
+  function addImageFromFile(file) {
+    if (!file || !file.type?.startsWith('image/')) return;
+    if (!ensureCanAdd(1)) return;
+    const reader = new FileReader();
+    reader.onload = () => addImageFromUrl(reader.result);
+    reader.readAsDataURL(file);
+  }
+
+  function addImageFromBlob(blob) {
+    if (!blob || !blob.type?.startsWith('image/')) return;
+    if (!ensureCanAdd(1)) return;
+    const url = URL.createObjectURL(blob);
+    fabric.Image.fromURL(url, (img) => {
+      if (!img) { URL.revokeObjectURL(url); return; }
+      if (!ensureCanAdd(1)) { URL.revokeObjectURL(url); return; }
+
+      fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
+      img.set({
+        originX: 'center',
+        originY: 'center',
+        left: canvas.getWidth() / 2,
+        top: canvas.getHeight() / 2,
+        selectable: true
+      });
+
+      canvas.add(img);
+      canvas.setActiveObject(img);
+      canvas.requestRenderAll();
+      scheduleSave();
+      tryEmbedImageAsDataURL(img).then(() => scheduleSave());
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+  }
 
   function fitImageInside(img, cw, ch, maxRatio = 1.0) {
     const w = img.width || 1;
@@ -277,103 +313,24 @@
     img.scale(scale);
   }
 
-  function objURLFromBlob(blob) {
-    try { return URL.createObjectURL(blob); } catch { return null; }
-  }
-
-  async function addImageFromUrl(url) {
-    if (!url) return;
-    if (!ensureCanAdd(1)) return;
-    const clean = url.trim();
-
-    // 1) まず fetch して Blob を取得（CORS 許可があれば成功）
-    let blob = null;
-    try {
-      const res = await fetch(clean, { mode: 'cors', credentials: 'omit' });
-      if (!res.ok) throw new Error('fetch not ok');
-      blob = await res.blob();
-    } catch {
-      // fetch 失敗時は Blob なしで URL 表示にフォールバック（後で保存時もURL参照）
-      blob = null;
-    }
-
-    if (blob) {
-      const key = await saveImageBlob(blob);
-      const urlObj = objURLFromBlob(blob);
-      fabric.Image.fromURL(urlObj, (img) => {
-        if (!img) { if (urlObj) setTimeout(() => URL.revokeObjectURL(urlObj), 2000); return; }
-        img.set({ crossOrigin: 'anonymous' });
-        fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
-        img.set({
-          originX: 'center',
-          originY: 'center',
-          left: canvas.getWidth() / 2,
-          top: canvas.getHeight() / 2,
-          selectable: true,
-          prxBlobKey: key,
-          prxSrcUrl: null
+  async function tryEmbedImageAsDataURL(fimg) {
+    return new Promise((resolve) => {
+      try {
+        const el = fimg.getElement();
+        const t = document.createElement('canvas');
+        t.width  = el.naturalWidth  || el.videoWidth  || el.width  || fimg.width  || 1;
+        t.height = el.naturalHeight || el.videoHeight || el.height || fimg.height || 1;
+        const ctx = t.getContext('2d');
+        ctx.drawImage(el, 0, 0);
+        const dataUrl = t.toDataURL('image/png'); // 元のまま（ここは今回変更しない）
+        fimg.setSrc(dataUrl, () => {
+          canvas.requestRenderAll();
+          resolve(true);
         });
-        canvas.add(img);
-        canvas.setActiveObject(img);
-        canvas.requestRenderAll();
-        scheduleSave();
-        // objectURL はしばらく後に開放
-        setTimeout(() => { try { URL.revokeObjectURL(urlObj); } catch {} }, 2000);
-      }, { crossOrigin: 'anonymous' });
-      return;
-    }
-
-    // Blob 取得不可: URL 直接読み込み（CORSにより taint の可能性はあるが、保存はURL参照なので問題なし）
-    fabric.Image.fromURL(clean, (img) => {
-      if (!img) return;
-      img.set({ crossOrigin: 'anonymous' });
-      fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
-      img.set({
-        originX: 'center',
-        originY: 'center',
-        left: canvas.getWidth() / 2,
-        top: canvas.getHeight() / 2,
-        selectable: true,
-        prxBlobKey: null,
-        prxSrcUrl: clean
-      });
-      canvas.add(img);
-      canvas.setActiveObject(img);
-      canvas.requestRenderAll();
-      scheduleSave();
-    }, { crossOrigin: 'anonymous' });
-  }
-
-  function addImageFromFile(file) {
-    if (!file || !file.type?.startsWith('image/')) return;
-    if (!ensureCanAdd(1)) return;
-    addImageFromBlob(file);
-  }
-
-  async function addImageFromBlob(blob) {
-    if (!blob || !blob.type?.startsWith('image/')) return;
-    if (!ensureCanAdd(1)) return;
-
-    const key = await saveImageBlob(blob);
-    const url = objURLFromBlob(blob);
-    fabric.Image.fromURL(url, (img) => {
-      if (!img) { if (url) setTimeout(() => URL.revokeObjectURL(url), 2000); return; }
-      fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
-      img.set({
-        originX: 'center',
-        originY: 'center',
-        left: canvas.getWidth() / 2,
-        top: canvas.getHeight() / 2,
-        selectable: true,
-        prxBlobKey: key,
-        prxSrcUrl: null
-      });
-      canvas.add(img);
-      canvas.setActiveObject(img);
-      canvas.requestRenderAll();
-      scheduleSave();
-      setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 2000);
-    }, { crossOrigin: 'anonymous' });
+      } catch (e) {
+        resolve(false);
+      }
+    });
   }
 
   // -------- D&D --------
@@ -434,12 +391,12 @@
     }
   });
 
-  // ====== 画像コピー（Ctrl/⌘+C） ======
+  // ====== 画像コピー（Ctrl/⌘+C）追加 ======
   async function copyActiveImageToClipboard() {
     const sel = canvas.getActiveObjects() || [];
-    if (sel.length !== 1) return false;
+    if (sel.length !== 1) return false;                 // 複数やゼロは不可
     const obj = sel[0];
-    if (obj?.type !== 'image') return false;
+    if (obj?.type !== 'image') return false;            // 画像以外は対象外
 
     return new Promise((resolve, reject) => {
       obj.clone((cloned) => {
@@ -448,9 +405,16 @@
           const bbox = cloned.getBoundingRect(true, true);
           const w = Math.max(1, Math.round(bbox.width  * multiplier));
           const h = Math.max(1, Math.round(bbox.height * multiplier));
+
           const sc = new fabric.StaticCanvas(null, { width: w, height: h });
 
-          cloned.set({ originX: 'center', originY: 'center', left: w / 2, top:  h / 2, selectable: false });
+          cloned.set({
+            originX: 'center',
+            originY: 'center',
+            left: w / 2,
+            top:  h / 2,
+            selectable: false
+          });
           cloned.scaleX = (cloned.scaleX || 1) * multiplier;
           cloned.scaleY = (cloned.scaleY || 1) * multiplier;
 
@@ -468,7 +432,9 @@
               sc.dispose();
             }
           }, 'image/png');
-        } catch (e) { reject(e); }
+        } catch (e) {
+          reject(e);
+        }
       });
     });
   }
@@ -477,7 +443,7 @@
   window.addEventListener('keydown', async (e) => {
     if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.isContentEditable)) return;
 
-    // Delete / Backspace = 削除（関連 Blob は明示削除しない：同一 Blob を共有している可能性があるため）
+    // Delete / Backspace = 削除
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = canvas.getActiveObjects();
       if (active && active.length) {
@@ -511,99 +477,56 @@
     }
   });
 
-  // -------- 永続化（IndexedDB）--------
+  // -------- 永続化（localStorage）--------
   let saveTimer = null;
   function scheduleSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(saveNow, 400);
+    saveTimer = setTimeout(saveNow, 600);
   }
 
   async function saveNow() {
-    try {
-      const json = canvas.toJSON(CUSTOM_PROPS);
-      await saveBoardJSON({ v: 2, json }); // v2: IndexedDB 版
-    } catch (e) {
-      console.warn('save board failed:', e);
-      toast('保存に失敗しました', 1200);
+    const imgs = canvas.getObjects('image');
+    for (const img of imgs) {
+      await tryEmbedImageAsDataURL(img).catch(() => {});
     }
+    const json = canvas.toJSON(['selectable', 'originX', 'originY', 'centeredScaling']);
+    localStorage.setItem(LS_KEY, JSON.stringify({ v: 1, json }));
   }
 
-  // 旧 localStorage からの移行（初回のみ）
-  async function migrateFromLocalStorageIfNeeded() {
+  function loadFromLocalStorage() {
     try {
       const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return false;
+      if (!raw) return;
       const parsed = JSON.parse(raw);
-      if (!parsed?.json) return false;
-      // そのまま boards に移す（画像 src は DataURL のままでも OK。以後の編集保存で Blob 参照に置き換えられる可能性あり）
-      await saveBoardJSON({ v: 1, json: parsed.json });
-      localStorage.removeItem(LS_KEY);
-      console.info('[PureFab] migrated board JSON from localStorage to IndexedDB.');
-      return true;
-    } catch (e) {
-      console.warn('migration failed:', e);
-      return false;
-    }
-  }
+      if (!parsed?.json) return;
 
-  async function loadBoard() {
-    // まず移行を試みる
-    await migrateFromLocalStorageIfNeeded();
-
-    const saved = await loadBoardJSON();
-    if (!saved?.json) return;
-
-    // JSON をロード。画像の prxBlobKey/prxSrcUrl を見て src を復元
-    const reviveQueue = [];
-    canvas.loadFromJSON(saved.json, () => {
-      const imgs = canvas.getObjects('image');
-      for (const img of imgs) {
-        // center 原点/centeredScaling の整合
-        if (img.originX !== 'center' || img.originY !== 'center') {
-          const cx = img.left + img.getScaledWidth() / 2;
-          const cy = img.top  + img.getScaledHeight() / 2;
-          img.set({ originX: 'center', originY: 'center', left: cx, top: cy });
+      canvas.loadFromJSON(parsed.json, () => {
+        const imgs = canvas.getObjects('image');
+        for (const img of imgs) {
+          if (img.originX !== 'center' || img.originY !== 'center') {
+            const cx = img.left + img.getScaledWidth() / 2;
+            const cy = img.top  + img.getScaledHeight() / 2;
+            img.set({ originX: 'center', originY: 'center', left: cx, top: cy });
+          }
+          img.centeredScaling = true;
+          img.setCoords();
         }
-        img.centeredScaling = true;
-        img.setCoords();
 
-        const key = img.prxBlobKey || null;
-        const url = img.prxSrcUrl  || null;
-
-        if (key) {
-          // 非同期で Blob を取得して objectURL に差し替え
-          reviveQueue.push(
-              (async () => {
-                try {
-                  const blob = await getImageBlob(key);
-                  if (blob) {
-                    const objUrl = objURLFromBlob(blob);
-                    await new Promise((res) => img.setSrc(objUrl, () => res()));
-                    setTimeout(() => { try { URL.revokeObjectURL(objUrl); } catch {} }, 2000);
-                  }
-                } catch (e) {
-                  console.warn('image revive failed (blob):', e);
-                }
-              })()
-          );
-        } else if (url) {
-          // URL 参照のまま（CORS 次第では taint だが保存は JSON のみなので問題なし）
-        }
-      }
-
-      Promise.allSettled(reviveQueue).then(() => {
         canvas.renderAll();
         enforceImageLimitAfterLoad();
-        scheduleSave(); // 正規化後に保存
+        scheduleSave();
       });
-    });
+    } catch (e) {
+      console.warn('Failed to load canvas JSON:', e);
+    }
   }
-  loadBoard();
+  loadFromLocalStorage();
 
   ['object:added', 'object:modified', 'object:removed'].forEach(ev => {
     canvas.on(ev, scheduleSave);
   });
 
-  // -------- D&D/貼り付け補助 --------
-  // クリックで URL 追加用の入力を後から足したくなった場合に備え、ここに空関数を残すだけ
+  // -------- 補助（UI要素は削除済み）--------
 })();
+
+```
