@@ -230,7 +230,7 @@
 
   const hideBtn = document.createElement('button');
   hideBtn.type = 'button';
-  hideBtn.textContent = '⟩ 隠す';
+  hideBtn.textContent = ' ⟩⟩ ';
   Object.assign(hideBtn.style, {
     border: '1px solid #3a3a3a',
     background: '#2a2a2a',
@@ -288,7 +288,7 @@
   // 「開く」ピル（折りたたみ時のみ表示）
   const opener = document.createElement('button');
   opener.id = UI_OPEN_BTN_ID;
-  opener.textContent = '⟨ ボードを開く';
+  opener.textContent = ' ⟨⟨ ';
   Object.assign(opener.style, {
     position: 'fixed',
     right: '12px',
