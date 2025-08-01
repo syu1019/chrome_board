@@ -1,3 +1,40 @@
+これを適用して
+```
+Ctrl+Zで戻せるのは直近２０回にして
+
+以下が、このコードにCtrl+Zで戻せると便利な操作です（いまの実装/使用状況に即して厳選）。
+※Fabricの標準操作（ドラッグ移動・ハンドルでの拡大縮小・回転）は発生します。コピー（クリップボードへ）は状態を変えないので通常はUndo対象外です。
+
+1) 最優先で入れたい（体感の恩恵が大きい）
+画像の追加（D&D／URL／貼り付け／ファイル）
+
+戻す内容: 直前に追加した画像を削除。
+
+補足: 複数枚を一度に追加したときはひと塊の1ステップとして扱うと直感的。enforceImageLimitAfterLoadで自動削除が起きた場合も同じ束で戻せると親切。
+
+画像の削除（Delete/Backspace）
+
+戻す内容: 削除した画像を元の座標・拡大率・回転・Z順で復活。
+
+変形系の編集（移動／拡大縮小／回転）
+
+戻す内容: 直前のleft/top/scaleX/scaleY/angleなどを復元。
+
+補足: 複数選択の一括変形はひと塊で戻す。
+
+2) 可能なら対応したい（整合性・見た目の安定に効く）
+Zオーダーの変化（追加で最前面になる／将来的にbringToFront等を入れる場合）
+
+戻す内容: 変更前のスタッキング順に戻す。
+
+自動上限制御による強制削除（MAX_IMAGES超過時）
+
+戻す内容: 自動で消えた古い画像群をまとめて復活。
+
+補足: 「ドロップで9枚→上限で1枚自動削除」も一回の操作としてUndo可能に。
+```
+
+```content.js
 // Pinterest Split + Fabric Board
 // (IndexedDB persists: images as Blob, board JSON in 'boards'; no pan, no zoom, RIGHT board, toolbar removed, max 8 images, centered scaling)
 // 前提: fabric.min.js を manifest の content_scripts で本ファイルより先に読み込み済み
@@ -230,199 +267,6 @@
   fabric.Object.prototype.originX = 'center';
   fabric.Object.prototype.originY = 'center';
 
-  // ===== Undo マネージャ（深さ20） =====
-  const UNDO_LIMIT = 20;
-  const CUSTOM_PROPS = ['selectable','originX','originY','centeredScaling','prxBlobKey','prxSrcUrl','prxId'];
-  const UNDO_TYPES = { ADD:'add', REMOVE:'remove', TRANSFORM:'transform', AUTOLIMIT:'autoLimitDelete' };
-
-  // prxId 付与
-  function ensurePrxId(obj){
-    if (!obj.prxId) obj.prxId = (crypto?.randomUUID && crypto.randomUUID()) || ('oid-' + Date.now() + '-' + Math.random().toString(36).slice(2));
-    return obj.prxId;
-  }
-  function findById(id){ return canvas.getObjects().find(o => o.prxId === id) || null; }
-
-  // 変形で戻すプロパティ
-  const TF_KEYS = ['left','top','scaleX','scaleY','angle','flipX','flipY','skewX','skewY','opacity'];
-  const pickProps = (obj) => {
-    const out = {};
-    TF_KEYS.forEach(k => out[k] = obj[k]);
-    return out;
-  };
-
-  // 画像のJSON + 挿入位置indexを保存
-  function serializeForRemove(obj){
-    const json = obj.toObject(CUSTOM_PROPS);
-    const index = canvas.getObjects().indexOf(obj);
-    return { json, index };
-  }
-
-  // JSONから画像復元（prxBlobKey優先, なければprxSrcUrl/元src）
-  async function restoreImageFromJSON(json, index){
-    // prxId を維持
-    const prxId = json.prxId || ((crypto?.randomUUID && crypto.randomUUID()) || ('oid-' + Math.random().toString(36).slice(2)));
-
-    const applyCommon = (img) => {
-      // JSONの座標系などを反映
-      img.set(json);
-      img.prxId = prxId;
-      img.centeredScaling = true;
-      img.setCoords();
-    };
-
-    const blobKey = json.prxBlobKey || null;
-    const srcUrl  = json.prxSrcUrl  || json.src || null;
-
-    if (blobKey){
-      try{
-        const blob = await getImageBlob(blobKey);
-        if (blob){
-          const objUrl = URL.createObjectURL(blob);
-          return new Promise((resolve)=> {
-            fabric.Image.fromURL(objUrl, (img)=>{
-              if (img){
-                applyCommon(img);
-                canvas.insertAt(img, Math.max(0,index), true);
-                canvas.requestRenderAll();
-              }
-              setTimeout(()=>{ try{ URL.revokeObjectURL(objUrl); }catch{} }, 2000);
-              resolve(img || null);
-            }, { crossOrigin: 'anonymous' });
-          });
-        }
-      }catch(e){ console.warn('restore blob failed', e); }
-    }
-    if (srcUrl){
-      return new Promise((resolve)=> {
-        fabric.Image.fromURL(srcUrl, (img)=>{
-          if (img){
-            applyCommon(img);
-            canvas.insertAt(img, Math.max(0,index), true);
-            canvas.requestRenderAll();
-          }
-          resolve(img || null);
-        }, { crossOrigin: 'anonymous' });
-      });
-    }
-    return null;
-  }
-
-  const Undo = (() => {
-    const stack = [];
-    const batches = new Map(); // token -> {type, ids:[], remaining}
-    let transformSnapshot = null; // { items:[{id, props}], ts }
-
-    function push(action){
-      stack.push(action);
-      if (stack.length > UNDO_LIMIT) stack.shift();
-    }
-
-    function beginBatch(type, expectedCount){
-      const token = 'batch-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-      batches.set(token, { type, ids:[], remaining: Math.max(1, expectedCount|0), done:false });
-      return token;
-    }
-
-    function recordAdd(obj, token){
-      ensurePrxId(obj);
-      // 対象バッチ
-      if (!token){
-        token = beginBatch(UNDO_TYPES.ADD, 1);
-      }
-      const b = batches.get(token);
-      if (!b) return;
-      if (!b.ids.includes(obj.prxId)) b.ids.push(obj.prxId);
-      b.remaining = Math.max(0, b.remaining - 1);
-      if (b.remaining === 0 && !b.done){
-        b.done = true;
-        push({ type: UNDO_TYPES.ADD, ids: b.ids.slice() });
-        batches.delete(token);
-      }
-    }
-
-    async function undo(){
-      const act = stack.pop();
-      if (!act) { toast('これ以上戻せません'); return; }
-
-      if (act.type === UNDO_TYPES.ADD){
-        // 追加 → 削除
-        act.ids.forEach(id => {
-          const o = findById(id);
-          if (o) canvas.remove(o);
-        });
-        canvas.discardActiveObject();
-        canvas.requestRenderAll();
-        scheduleSave();
-        toast('追加を取り消しました');
-        return;
-      }
-
-      if (act.type === UNDO_TYPES.REMOVE || act.type === UNDO_TYPES.AUTOLIMIT){
-        // 削除 → 復元（まとめて）
-        const jobs = act.objects.map(o => restoreImageFromJSON(o.json, o.index));
-        await Promise.allSettled(jobs);
-        canvas.requestRenderAll();
-        scheduleSave();
-        toast('削除を取り消しました');
-        return;
-      }
-
-      if (act.type === UNDO_TYPES.TRANSFORM){
-        // 変形 → 元の座標/拡大率/回転などへ
-        for (const it of act.before){
-          const o = findById(it.id);
-          if (o){
-            Object.assign(o, it.props);
-            o.setCoords();
-          }
-        }
-        canvas.requestRenderAll();
-        scheduleSave();
-        toast('編集を取り消しました');
-        return;
-      }
-    }
-
-    // 変形スナップショット：mouse:downで保存、mouse:upで差分があればpush
-    function onPointerDown(){
-      const sel = canvas.getActiveObjects() || [];
-      if (!sel.length) { transformSnapshot = null; return; }
-      transformSnapshot = {
-        ts: Date.now(),
-        items: sel.map(o => ({ id: ensurePrxId(o), props: pickProps(o) }))
-      };
-    }
-    function onPointerUp(){
-      if (!transformSnapshot) return;
-      const changed = [];
-      for (const snap of transformSnapshot.items){
-        const o = findById(snap.id);
-        if (!o) continue;
-        const now = pickProps(o);
-        // 差分判定
-        const diff = TF_KEYS.some(k => (now[k] ?? null) !== (snap.props[k] ?? null));
-        if (diff) changed.push({ id: snap.id, props: snap.props });
-      }
-      transformSnapshot = null;
-      if (changed.length){
-        push({ type: UNDO_TYPES.TRANSFORM, before: changed });
-      }
-    }
-
-    return {
-      beginBatch, recordAdd, undo,
-      onPointerDown, onPointerUp,
-      pushRemove(objects){ // objects: [{json,index}, ...]
-        if (!objects.length) return;
-        push({ type: UNDO_TYPES.REMOVE, objects });
-      },
-      pushAutoLimit(objects){
-        if (!objects.length) return;
-        push({ type: UNDO_TYPES.AUTOLIMIT, objects });
-      }
-    };
-  })();
-
   // ホイールズーム完全無効化
   canvas.on('mouse:wheel', (opt) => {
     opt.e.preventDefault();
@@ -449,25 +293,18 @@
     const imgs = canvas.getObjects('image');
     if (imgs.length <= MAX_IMAGES) return;
     const excess = imgs.length - MAX_IMAGES;
-
-    const removed = [];
     for (let i = 0; i < excess; i++) {
       const list = canvas.getObjects('image'); // 先に追加されたものから削除
-      if (list[i]) {
-        ensurePrxId(list[i]);
-        removed.push(serializeForRemove(list[i]));
-        canvas.remove(list[i]);
-      }
+      if (list[i]) canvas.remove(list[i]);
     }
-    if (removed.length){
-      Undo.pushAutoLimit(removed);
-      toast(`画像は最大 ${MAX_IMAGES} 枚までに制限しました`);
-      canvas.requestRenderAll();
-      scheduleSave();
-    }
+    canvas.requestRenderAll();
+    scheduleSave();
+    toast(`画像は最大 ${MAX_IMAGES} 枚までに制限しました`);
   }
 
   // -------- 画像追加ユーティリティ（IndexedDB保存対応） --------
+  const CUSTOM_PROPS = ['selectable','originX','originY','centeredScaling','prxBlobKey','prxSrcUrl'];
+
   function fitImageInside(img, cw, ch, maxRatio = 1.0) {
     const w = img.width || 1;
     const h = img.height || 1;
@@ -479,18 +316,19 @@
     try { return URL.createObjectURL(blob); } catch { return null; }
   }
 
-  async function addImageFromUrl(url, batchToken) {
+  async function addImageFromUrl(url) {
     if (!url) return;
     if (!ensureCanAdd(1)) return;
     const clean = url.trim();
 
-    // 1) fetch → Blob 取得（可能なら）
+    // 1) まず fetch して Blob を取得（CORS 許可があれば成功）
     let blob = null;
     try {
       const res = await fetch(clean, { mode: 'cors', credentials: 'omit' });
       if (!res.ok) throw new Error('fetch not ok');
       blob = await res.blob();
     } catch {
+      // fetch 失敗時は Blob なしで URL 表示にフォールバック（後で保存時もURL参照）
       blob = null;
     }
 
@@ -510,10 +348,8 @@
           prxBlobKey: key,
           prxSrcUrl: null
         });
-        ensurePrxId(img);
         canvas.add(img);
         canvas.setActiveObject(img);
-        Undo.recordAdd(img, batchToken);
         canvas.requestRenderAll();
         scheduleSave();
         setTimeout(() => { try { URL.revokeObjectURL(urlObj); } catch {} }, 2000);
@@ -521,7 +357,7 @@
       return;
     }
 
-    // Blob 取れない → URL 直接
+    // Blob 取得不可: URL 直接読み込み
     fabric.Image.fromURL(clean, (img) => {
       if (!img) return;
       img.set({ crossOrigin: 'anonymous' });
@@ -535,22 +371,20 @@
         prxBlobKey: null,
         prxSrcUrl: clean
       });
-      ensurePrxId(img);
       canvas.add(img);
       canvas.setActiveObject(img);
-      Undo.recordAdd(img, batchToken);
       canvas.requestRenderAll();
       scheduleSave();
     }, { crossOrigin: 'anonymous' });
   }
 
-  function addImageFromFile(file, batchToken) {
+  function addImageFromFile(file) {
     if (!file || !file.type?.startsWith('image/')) return;
     if (!ensureCanAdd(1)) return;
-    addImageFromBlob(file, batchToken);
+    addImageFromBlob(file);
   }
 
-  async function addImageFromBlob(blob, batchToken) {
+  async function addImageFromBlob(blob) {
     if (!blob || !blob.type?.startsWith('image/')) return;
     if (!ensureCanAdd(1)) return;
 
@@ -568,10 +402,8 @@
         prxBlobKey: key,
         prxSrcUrl: null
       });
-      ensurePrxId(img);
       canvas.add(img);
       canvas.setActiveObject(img);
-      Undo.recordAdd(img, batchToken);
       canvas.requestRenderAll();
       scheduleSave();
       setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 2000);
@@ -593,8 +425,7 @@
       let capacity = MAX_IMAGES - getImageCount();
       if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
       const files = Array.from(dt.files).slice(0, capacity);
-      const token = Undo.beginBatch('add', files.length);
-      for (const f of files) addImageFromFile(f, token);
+      for (const f of files) addImageFromFile(f);
       return;
     }
 
@@ -603,7 +434,7 @@
     const text    = (uriList || plain || '').trim();
     if (text && isProbablyUrl(text)) {
       if (!ensureCanAdd(1)) return;
-      addImageFromUrl(text, null); // 単発 → 内部で1ステップとして登録
+      addImageFromUrl(text);
     }
   });
 
@@ -623,11 +454,9 @@
     if (items.length) {
       let capacity = MAX_IMAGES - getImageCount();
       if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
-      const take = items.slice(0, capacity);
-      const token = Undo.beginBatch('add', take.length);
-      for (const it of take) {
+      for (const it of items.slice(0, capacity)) {
         const blob = it.getAsFile();
-        if (blob) addImageFromBlob(blob, token);
+        if (blob) addImageFromBlob(blob);
       }
       return;
     }
@@ -635,7 +464,7 @@
     const text = cd.getData('text')?.trim();
     if (text && isProbablyUrl(text)) {
       if (!ensureCanAdd(1)) return;
-      addImageFromUrl(text, null);
+      addImageFromUrl(text);
     }
   });
 
@@ -678,29 +507,16 @@
     });
   }
 
-  // -------- キーボードショートカット（Delete/Backspace/Copy/Undo） --------
+  // -------- キーボードショートカット（Delete/Backspace/Copy） --------
   window.addEventListener('keydown', async (e) => {
     if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.isContentEditable)) return;
 
-    // Ctrl/⌘ + Z = Undo
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
-      e.preventDefault();
-      await Undo.undo();
-      return;
-    }
-
-    // Delete / Backspace = 削除（Undo対応）
+    // Delete / Backspace = 削除
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = canvas.getActiveObjects();
       if (active && active.length) {
-        const removed = [];
-        active.forEach(obj => {
-          ensurePrxId(obj);
-          removed.push(serializeForRemove(obj));
-          canvas.remove(obj);
-        });
+        active.forEach(obj => canvas.remove(obj));
         canvas.discardActiveObject();
-        if (removed.length) Undo.pushRemove(removed);
         canvas.requestRenderAll();
         scheduleSave();
         e.preventDefault();
@@ -729,10 +545,6 @@
     }
   });
 
-  // 変形のUndo収集：押下でスナップショット、解放で差分を確認
-  canvas.on('mouse:down', () => Undo.onPointerDown());
-  canvas.on('mouse:up',   () => Undo.onPointerUp());
-
   // -------- 永続化（IndexedDB）--------
   let saveTimer = null;
   function scheduleSave() {
@@ -758,8 +570,6 @@
     const reviveQueue = [];
     canvas.loadFromJSON(saved.json, () => {
       const imgs = canvas.getObjects('image');
-      let needResave = false;
-
       for (const img of imgs) {
         // center 原点/centeredScaling の整合
         if (img.originX !== 'center' || img.originY !== 'center') {
@@ -768,7 +578,6 @@
           img.set({ originX: 'center', originY: 'center', left: cx, top: cy });
         }
         img.centeredScaling = true;
-        ensurePrxId(img);
         img.setCoords();
 
         const key = img.prxBlobKey || null;
@@ -792,26 +601,49 @@
           );
         } else if (url) {
           // URL 参照のまま
-        } else {
-          // srcが無い場合は将来の不整合回避のため保存更新
-          needResave = true;
         }
       }
 
       Promise.allSettled(reviveQueue).then(() => {
         canvas.renderAll();
         enforceImageLimitAfterLoad();
-        if (needResave) scheduleSave(); // 正規化後に保存
+        scheduleSave(); // 正規化後に保存
       });
     });
   }
   loadBoard();
 
-  // 永続化トリガ
   ['object:added', 'object:modified', 'object:removed'].forEach(ev => {
     canvas.on(ev, scheduleSave);
   });
 
-  // -------- D&D/貼り付け補助（将来のUI拡張用のフックを残す） --------
+  // -------- D&D/貼り付け補助 --------
   // クリックで URL 追加用の入力を後から足したくなった場合に備え、ここに空関数を残すだけ
 })();
+```
+
+```manifest.json
+{
+  "name": "Pinterest Split + Fabric Board",
+  "description": "Pinterest画面を3:7に分割し、左にFabric.jsでボードを表示します。",
+  "version": "1.0.0",
+  "manifest_version": 3,
+  "permissions": ["clipboardWrite"],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.pinterest.com/*",
+        "http://*.pinterest.com/*",
+        "https://*.pinterest.jp/*",
+        "http://*.pinterest.jp/*"
+      ],
+      "run_at": "document_end",
+      "js": [
+        "fabric.min.js",
+        "content.js"
+      ]
+    }
+  ]
+}
+
+```
