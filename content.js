@@ -8,8 +8,6 @@
   const APP_ID   = 'prx-root-purefab';
   const STYLE_ID = APP_ID + '-style';
   const UI_OPEN_BTN_ID = APP_ID + '-opener';
-  // 追加: Pinterest 検索バーのセレクタ
-  const SEARCH_SEL = '.Jea.KS5.i1W.ujU.xcv.L4E.zI7';
 
   // ==== 二重起動ガード ====
   if (window.__PRX_PUREFAB_ACTIVE__) {
@@ -190,43 +188,6 @@
   applyGlobalStyle(initialVisible);
   (document.head || document.documentElement).appendChild(style);
 
-  // --- 追加: 検索バーを開閉に合わせてリセット ---
-  function fixSearchBar() {
-    try {
-      const list = document.querySelectorAll(SEARCH_SEL);
-      if (!list || !list.length) return;
-
-      list.forEach((el) => {
-        // inline の固定幅/変形をクリアして再レイアウトを促す
-        el.style.width = '';
-        el.style.maxWidth = '';
-        el.style.minWidth = '';
-        el.style.flex = '';
-        el.style.flexBasis = '';
-        el.style.transform = '';
-        el.style.setProperty('width', '', 'important');
-        el.style.setProperty('max-width', '', 'important');
-        el.style.setProperty('min-width', '', 'important');
-
-        // 一部構造で親が固定幅を持つ場合もあるため、親側も緩める
-        const p = el.parentElement;
-        if (p) {
-          p.style.width = '';
-          p.style.maxWidth = '';
-          p.style.minWidth = '';
-          p.style.flex = '';
-          p.style.flexBasis = '';
-        }
-
-        // 強制再計測（reflow）
-        void el.offsetWidth; // noop read
-      });
-
-      // Pinterest が resize をフックしていることが多いので発火
-      window.dispatchEvent(new Event('resize'));
-    } catch {}
-  }
-
   // -------- 右ペインDOM（トップバーなし／隠すボタンのみ） --------
   const host = document.createElement('div');
   host.id = APP_ID;
@@ -260,11 +221,11 @@
     border: '1px solid #3a3a3a',
     background: '#222',          // opener と同じ
     color: '#ddd',
-    width: '32px',
+    width: '32px',               // 正円にする
     height: '32px',
     padding: '0',
-    borderRadius: '999px',
-    display: 'inline-flex',
+    borderRadius: '999px',       // 正円
+    display: 'inline-flex',      // 中央寄せ
     alignItems: 'center',
     justifyContent: 'center',
     boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
@@ -341,23 +302,12 @@
     applyGlobalStyle(visible);
     opener.style.display = visible ? 'none' : 'block';
     localStorage.setItem(LS_KEY_VIS, visible ? '1' : '0');
-
-    // 追加: トランジション終了タイミングで検索バーをリセット
-    const after = () => {
-      resize(); safeRender(); fixSearchBar();
-    };
-
     if (visible) {
-      setTimeout(after, 210);
-    } else {
-      setTimeout(after, 210);
+      setTimeout(() => { resize(); safeRender(); }, 210);
     }
   }
   hideBtn.addEventListener('click', () => setBoardVisible(false));
   opener.addEventListener('click', () => setBoardVisible(true));
-
-  // 初期状態でも一度リセット（Pinterest 初期計測のズレ対策）
-  setTimeout(fixSearchBar, 300);
 
   // ===== Fabric.js 初期化 =====
   /** @type {fabric.Canvas} */
