@@ -64,7 +64,6 @@
 
   // -------- 基本設定 --------
   const SPLIT_RATIO = 0.30;                  // 右 30%（ボード）/ 左 70%（Pinterest）
-  const LS_KEY      = 'prx.fabric.board.json.v1'; // 旧 localStorage キー（移行用）
   const Z           = 2147483600;
   const BG          = '#1c1c1c';
   const CANVAS_BG   = '#2a2a2a';
@@ -267,7 +266,6 @@
   }
 
   // -------- 画像追加ユーティリティ（IndexedDB保存対応） --------
-  // custom properties to persist in JSON
   const CUSTOM_PROPS = ['selectable','originX','originY','centeredScaling','prxBlobKey','prxSrcUrl'];
 
   function fitImageInside(img, cw, ch, maxRatio = 1.0) {
@@ -317,13 +315,12 @@
         canvas.setActiveObject(img);
         canvas.requestRenderAll();
         scheduleSave();
-        // objectURL はしばらく後に開放
         setTimeout(() => { try { URL.revokeObjectURL(urlObj); } catch {} }, 2000);
       }, { crossOrigin: 'anonymous' });
       return;
     }
 
-    // Blob 取得不可: URL 直接読み込み（CORSにより taint の可能性はあるが、保存はURL参照なので問題なし）
+    // Blob 取得不可: URL 直接読み込み
     fabric.Image.fromURL(clean, (img) => {
       if (!img) return;
       img.set({ crossOrigin: 'anonymous' });
@@ -477,7 +474,7 @@
   window.addEventListener('keydown', async (e) => {
     if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.isContentEditable)) return;
 
-    // Delete / Backspace = 削除（関連 Blob は明示削除しない：同一 Blob を共有している可能性があるため）
+    // Delete / Backspace = 削除
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = canvas.getActiveObjects();
       if (active && active.length) {
@@ -528,28 +525,7 @@
     }
   }
 
-  // 旧 localStorage からの移行（初回のみ）
-  async function migrateFromLocalStorageIfNeeded() {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return false;
-      const parsed = JSON.parse(raw);
-      if (!parsed?.json) return false;
-      // そのまま boards に移す（画像 src は DataURL のままでも OK。以後の編集保存で Blob 参照に置き換えられる可能性あり）
-      await saveBoardJSON({ v: 1, json: parsed.json });
-      localStorage.removeItem(LS_KEY);
-      console.info('[PureFab] migrated board JSON from localStorage to IndexedDB.');
-      return true;
-    } catch (e) {
-      console.warn('migration failed:', e);
-      return false;
-    }
-  }
-
   async function loadBoard() {
-    // まず移行を試みる
-    await migrateFromLocalStorageIfNeeded();
-
     const saved = await loadBoardJSON();
     if (!saved?.json) return;
 
@@ -587,7 +563,7 @@
               })()
           );
         } else if (url) {
-          // URL 参照のまま（CORS 次第では taint だが保存は JSON のみなので問題なし）
+          // URL 参照のまま
         }
       }
 
