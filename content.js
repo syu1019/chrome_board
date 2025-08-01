@@ -242,7 +242,8 @@
   hideBtn.onmouseenter = () => hideBtn.style.background = '#313131';
   hideBtn.onmouseleave = () => hideBtn.style.background = '#2a2a2a';
 
-  topbar.append(title, hideBtn);
+  topbar.append(hideBtn);
+  topbar.style.justifyContent = 'flex-end';
 
   const wrap = document.createElement('div');
   Object.assign(wrap.style, { position: 'relative', flex: '1', minHeight: '0', display: 'block', contain: 'strict' });
