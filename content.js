@@ -219,14 +219,20 @@
     right: '8px',
     zIndex: String(Z + 1),
     border: '1px solid #3a3a3a',
-    background: '#2a2a2a',
+    background: '#222',          // opener と同じ
     color: '#ddd',
-    padding: '6px 10px',
-    borderRadius: '8px',
+    width: '32px',               // 正円にする
+    height: '32px',
+    padding: '0',
+    borderRadius: '999px',       // 正円
+    display: 'inline-flex',      // 中央寄せ
+    alignItems: 'center',
+    justifyContent: 'center',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
     cursor: 'pointer'
   });
-  hideBtn.onmouseenter = () => hideBtn.style.background = '#313131';
-  hideBtn.onmouseleave = () => hideBtn.style.background = '#2a2a2a';
+  hideBtn.onmouseenter = () => hideBtn.style.background = '#2a2a2a';
+  hideBtn.onmouseleave = () => hideBtn.style.background = '#222';
 
   const wrap = document.createElement('div');
   Object.assign(wrap.style, { position: 'relative', flex: '1', minHeight: '0', display: 'block', contain: 'strict' });
