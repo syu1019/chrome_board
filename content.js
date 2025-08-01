@@ -15,7 +15,7 @@
   }
   window.__PRX_PUREFAB_ACTIVE__ = true;
 
-  // ---- 外部エラーフック（発生源の特定補助）----
+  // ---- 外部エラーフック ----
   (function setupErrorTaps() {
     const tag = '%c[PureFab/ErrorTap]';
     const sty = 'color:#0bf';
@@ -123,6 +123,21 @@
     });
   }
 
+  async function idbListAll(store) {
+    const db  = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx  = db.transaction(store, 'readonly');
+      const st  = tx.objectStore(store);
+      const out = [];
+      st.openCursor().onsuccess = (e) => {
+        const cur = e.target.result;
+        if (cur) { out.push(cur.value); cur.continue(); }
+      };
+      tx.oncomplete = () => resolve(out);
+      tx.onerror    = () => reject(tx.error);
+    });
+  }
+
   async function saveBoardJSON(json) {
     const data = { id: 'main', json, updated: Date.now() };
     await idbPut('boards', data);
@@ -155,7 +170,7 @@
   `;
   (document.head || document.documentElement).appendChild(style);
 
-  // -------- 右ペイン（ボード）DOM --------
+  // -------- 右ペインDOM --------
   const host = document.createElement('div');
   host.id = APP_ID;
   Object.assign(host.style, {
@@ -230,19 +245,17 @@
   fabric.Object.prototype.originX = 'center';
   fabric.Object.prototype.originY = 'center';
 
-  // ===== Undo マネージャ（深さ20） =====
+  // ===== Undo/Redo + バッチ確定（タイムアウト） =====
   const UNDO_LIMIT = 20;
   const CUSTOM_PROPS = ['selectable','originX','originY','centeredScaling','prxBlobKey','prxSrcUrl','prxId'];
   const UNDO_TYPES = { ADD:'add', REMOVE:'remove', TRANSFORM:'transform', AUTOLIMIT:'autoLimitDelete' };
 
-  // prxId 付与
   function ensurePrxId(obj){
     if (!obj.prxId) obj.prxId = (crypto?.randomUUID && crypto.randomUUID()) || ('oid-' + Date.now() + '-' + Math.random().toString(36).slice(2));
     return obj.prxId;
   }
   function findById(id){ return canvas.getObjects().find(o => o.prxId === id) || null; }
 
-  // 変形で戻すプロパティ
   const TF_KEYS = ['left','top','scaleX','scaleY','angle','flipX','flipY','skewX','skewY','opacity'];
   const pickProps = (obj) => {
     const out = {};
@@ -250,25 +263,15 @@
     return out;
   };
 
-  // 画像のJSON + 挿入位置indexを保存
   function serializeForRemove(obj){
     const json = obj.toObject(CUSTOM_PROPS);
     const index = canvas.getObjects().indexOf(obj);
     return { json, index };
   }
 
-  // JSONから画像復元（prxBlobKey優先, なければprxSrcUrl/元src）
   async function restoreImageFromJSON(json, index){
-    // prxId を維持
     const prxId = json.prxId || ((crypto?.randomUUID && crypto.randomUUID()) || ('oid-' + Math.random().toString(36).slice(2)));
-
-    const applyCommon = (img) => {
-      // JSONの座標系などを反映
-      img.set(json);
-      img.prxId = prxId;
-      img.centeredScaling = true;
-      img.setCoords();
-    };
+    const applyCommon = (img) => { img.set(json); img.prxId = prxId; img.centeredScaling = true; img.setCoords(); };
 
     const blobKey = json.prxBlobKey || null;
     const srcUrl  = json.prxSrcUrl  || json.src || null;
@@ -280,11 +283,7 @@
           const objUrl = URL.createObjectURL(blob);
           return new Promise((resolve)=> {
             fabric.Image.fromURL(objUrl, (img)=>{
-              if (img){
-                applyCommon(img);
-                canvas.insertAt(img, Math.max(0,index), true);
-                canvas.requestRenderAll();
-              }
+              if (img){ applyCommon(img); canvas.insertAt(img, Math.max(0,index), true); canvas.requestRenderAll(); }
               setTimeout(()=>{ try{ URL.revokeObjectURL(objUrl); }catch{} }, 2000);
               resolve(img || null);
             }, { crossOrigin: 'anonymous' });
@@ -295,11 +294,7 @@
     if (srcUrl){
       return new Promise((resolve)=> {
         fabric.Image.fromURL(srcUrl, (img)=>{
-          if (img){
-            applyCommon(img);
-            canvas.insertAt(img, Math.max(0,index), true);
-            canvas.requestRenderAll();
-          }
+          if (img){ applyCommon(img); canvas.insertAt(img, Math.max(0,index), true); canvas.requestRenderAll(); }
           resolve(img || null);
         }, { crossOrigin: 'anonymous' });
       });
@@ -308,126 +303,193 @@
   }
 
   const Undo = (() => {
-    const stack = [];
-    const batches = new Map(); // token -> {type, ids:[], remaining}
-    let transformSnapshot = null; // { items:[{id, props}], ts }
+    const undoStack = [];
+    const redoStack = [];
+    const batches = new Map(); // token -> { type, items:[{id,json,index}], remaining, done, timer }
+    let transformSnapshot = null; // { items:[{id, props}], afterProps? }
 
-    function push(action){
-      stack.push(action);
-      if (stack.length > UNDO_LIMIT) stack.shift();
+    function clearRedo(){ redoStack.length = 0; }
+
+    function push(action, {fromReplay=false} = {}){
+      undoStack.push(action);
+      if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+      if (!fromReplay) clearRedo();
     }
 
     function beginBatch(type, expectedCount){
       const token = 'batch-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-      batches.set(token, { type, ids:[], remaining: Math.max(1, expectedCount|0), done:false });
+      const b = { type, items:[], remaining: Math.max(1, expectedCount|0), done:false, timer:null };
+      // タイムアウトで自動確定（例：4秒）
+      b.timer = setTimeout(() => finalizeBatch(token), 4000);
+      batches.set(token, b);
       return token;
+    }
+
+    function finalizeBatch(token){
+      const b = batches.get(token);
+      if (!b || b.done) return;
+      b.done = true;
+      clearTimeout(b.timer);
+      b.timer = null;
+      if (b.items.length){
+        // ADD バッチ：items は {id,json,index}
+        push({ type: UNDO_TYPES.ADD, items: b.items.map(x => ({ id:x.id, json:x.json, index:x.index })) });
+      }
+      batches.delete(token);
     }
 
     function recordAdd(obj, token){
       ensurePrxId(obj);
-      // 対象バッチ
+      const item = { id: obj.prxId, json: obj.toObject(CUSTOM_PROPS), index: canvas.getObjects().indexOf(obj) };
       if (!token){
         token = beginBatch(UNDO_TYPES.ADD, 1);
       }
       const b = batches.get(token);
       if (!b) return;
-      if (!b.ids.includes(obj.prxId)) b.ids.push(obj.prxId);
+      b.items.push(item);
       b.remaining = Math.max(0, b.remaining - 1);
       if (b.remaining === 0 && !b.done){
-        b.done = true;
-        push({ type: UNDO_TYPES.ADD, ids: b.ids.slice() });
-        batches.delete(token);
+        // 即時確定
+        finalizeBatch(token);
       }
     }
 
-    async function undo(){
-      const act = stack.pop();
+    async function doUndo(){
+      const act = undoStack.pop();
       if (!act) { toast('これ以上戻せません'); return; }
 
+      // 逆操作を redoStack に積む
       if (act.type === UNDO_TYPES.ADD){
         // 追加 → 削除
-        act.ids.forEach(id => {
-          const o = findById(id);
-          if (o) canvas.remove(o);
+        const removed = [];
+        act.items.forEach(it => {
+          const o = findById(it.id);
+          if (o){ removed.push(serializeForRemove(o)); canvas.remove(o); }
         });
         canvas.discardActiveObject();
         canvas.requestRenderAll();
         scheduleSave();
+        // Redo用（再追加に備え JSON を持つ）
+        redoStack.push({ type: UNDO_TYPES.ADD, items: act.items });
         toast('追加を取り消しました');
         return;
       }
 
       if (act.type === UNDO_TYPES.REMOVE || act.type === UNDO_TYPES.AUTOLIMIT){
-        // 削除 → 復元（まとめて）
-        const jobs = act.objects.map(o => restoreImageFromJSON(o.json, o.index));
-        await Promise.allSettled(jobs);
+        // 削除 → 復元
+        await Promise.allSettled(act.objects.map(o => restoreImageFromJSON(o.json, o.index)));
         canvas.requestRenderAll();
         scheduleSave();
+        // Redo用（再削除）
+        redoStack.push(act);
         toast('削除を取り消しました');
         return;
       }
 
       if (act.type === UNDO_TYPES.TRANSFORM){
-        // 変形 → 元の座標/拡大率/回転などへ
+        // 変形 → 元へ
         for (const it of act.before){
           const o = findById(it.id);
-          if (o){
-            Object.assign(o, it.props);
-            o.setCoords();
-          }
+          if (o){ Object.assign(o, it.props); o.setCoords(); }
         }
         canvas.requestRenderAll();
         scheduleSave();
+        // Redo用（after に進め直す）
+        redoStack.push(act);
         toast('編集を取り消しました');
         return;
       }
     }
 
-    // 変形スナップショット：mouse:downで保存、mouse:upで差分があればpush
+    async function doRedo(){
+      const act = redoStack.pop();
+      if (!act) { toast('これ以上やり直せません'); return; }
+
+      // 再適用し、undoStackへ積み直す（fromReplay=trueでRedoスタックのクリアを防ぐ）
+      if (act.type === UNDO_TYPES.ADD){
+        // 再追加
+        await Promise.allSettled(act.items.map(it => restoreImageFromJSON(it.json, it.index)));
+        canvas.requestRenderAll();
+        scheduleSave();
+        push({ type: UNDO_TYPES.ADD, items: act.items }, { fromReplay:true });
+        toast('追加をやり直しました');
+        return;
+      }
+
+      if (act.type === UNDO_TYPES.REMOVE || act.type === UNDO_TYPES.AUTOLIMIT){
+        // 再削除
+        const removed = [];
+        // act.objects は JSON（元状態）なので、現在キャンバス上の同一 prxId を探して削除
+        for (const oinfo of act.objects){
+          const id = oinfo.json?.prxId;
+          if (!id) continue;
+          const o = findById(id);
+          if (o){ removed.push(serializeForRemove(o)); canvas.remove(o); }
+        }
+        canvas.discardActiveObject();
+        canvas.requestRenderAll();
+        scheduleSave();
+        push({ type: act.type, objects: removed }, { fromReplay:true });
+        toast('削除をやり直しました');
+        return;
+      }
+
+      if (act.type === UNDO_TYPES.TRANSFORM){
+        // after に進める
+        for (const it of act.after){
+          const o = findById(it.id);
+          if (o){ Object.assign(o, it.props); o.setCoords(); }
+        }
+        canvas.requestRenderAll();
+        scheduleSave();
+        push(act, { fromReplay:true });
+        toast('編集をやり直しました');
+        return;
+      }
+    }
+
+    // 変形スナップショット
     function onPointerDown(){
       const sel = canvas.getActiveObjects() || [];
       if (!sel.length) { transformSnapshot = null; return; }
       transformSnapshot = {
-        ts: Date.now(),
         items: sel.map(o => ({ id: ensurePrxId(o), props: pickProps(o) }))
       };
     }
     function onPointerUp(){
       if (!transformSnapshot) return;
-      const changed = [];
-      for (const snap of transformSnapshot.items){
-        const o = findById(snap.id);
+      const before = transformSnapshot.items;
+      const after = [];
+      for (const b of before){
+        const o = findById(b.id);
         if (!o) continue;
         const now = pickProps(o);
-        // 差分判定
-        const diff = TF_KEYS.some(k => (now[k] ?? null) !== (snap.props[k] ?? null));
-        if (diff) changed.push({ id: snap.id, props: snap.props });
+        const diff = TF_KEYS.some(k => (now[k] ?? null) !== (b.props[k] ?? null));
+        if (diff) after.push({ id: b.id, props: now });
       }
       transformSnapshot = null;
-      if (changed.length){
-        push({ type: UNDO_TYPES.TRANSFORM, before: changed });
+      if (after.length){
+        const action = {
+          type: UNDO_TYPES.TRANSFORM,
+          before, // ここは「元に戻す」側
+          after   // ここは「やり直す」側
+        };
+        push(action);
       }
     }
 
     return {
-      beginBatch, recordAdd, undo,
+      beginBatch, recordAdd, finalizeBatch,
+      undo: doUndo, redo: doRedo,
       onPointerDown, onPointerUp,
-      pushRemove(objects){ // objects: [{json,index}, ...]
-        if (!objects.length) return;
-        push({ type: UNDO_TYPES.REMOVE, objects });
-      },
-      pushAutoLimit(objects){
-        if (!objects.length) return;
-        push({ type: UNDO_TYPES.AUTOLIMIT, objects });
-      }
+      pushRemove(objects){ if (objects.length) push({ type: UNDO_TYPES.REMOVE, objects }); },
+      pushAutoLimit(objects){ if (objects.length) push({ type: UNDO_TYPES.AUTOLIMIT, objects }); },
+      stacks(){ return { undoStack, redoStack, batches }; } // GC 用
     };
   })();
 
   // ホイールズーム完全無効化
-  canvas.on('mouse:wheel', (opt) => {
-    opt.e.preventDefault();
-    opt.e.stopPropagation();
-  });
+  canvas.on('mouse:wheel', (opt) => { opt.e.preventDefault(); opt.e.stopPropagation(); });
 
   // キャンバスのリサイズ
   const resize = () => {
@@ -467,7 +529,7 @@
     }
   }
 
-  // -------- 画像追加ユーティリティ（IndexedDB保存対応） --------
+  // -------- 画像追加ユーティリティ --------
   function fitImageInside(img, cw, ch, maxRatio = 1.0) {
     const w = img.width || 1;
     const h = img.height || 1;
@@ -475,24 +537,19 @@
     img.scale(scale);
   }
 
-  function objURLFromBlob(blob) {
-    try { return URL.createObjectURL(blob); } catch { return null; }
-  }
+  function objURLFromBlob(blob) { try { return URL.createObjectURL(blob); } catch { return null; } }
 
   async function addImageFromUrl(url, batchToken) {
     if (!url) return;
     if (!ensureCanAdd(1)) return;
     const clean = url.trim();
 
-    // 1) fetch → Blob 取得（可能なら）
     let blob = null;
     try {
       const res = await fetch(clean, { mode: 'cors', credentials: 'omit' });
       if (!res.ok) throw new Error('fetch not ok');
       blob = await res.blob();
-    } catch {
-      blob = null;
-    }
+    } catch { blob = null; }
 
     if (blob) {
       const key = await saveImageBlob(blob);
@@ -501,15 +558,7 @@
         if (!img) { if (urlObj) setTimeout(() => URL.revokeObjectURL(urlObj), 2000); return; }
         img.set({ crossOrigin: 'anonymous' });
         fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
-        img.set({
-          originX: 'center',
-          originY: 'center',
-          left: canvas.getWidth() / 2,
-          top: canvas.getHeight() / 2,
-          selectable: true,
-          prxBlobKey: key,
-          prxSrcUrl: null
-        });
+        img.set({ originX:'center', originY:'center', left:canvas.getWidth()/2, top:canvas.getHeight()/2, selectable:true, prxBlobKey:key, prxSrcUrl:null });
         ensurePrxId(img);
         canvas.add(img);
         canvas.setActiveObject(img);
@@ -521,20 +570,11 @@
       return;
     }
 
-    // Blob 取れない → URL 直接
     fabric.Image.fromURL(clean, (img) => {
       if (!img) return;
       img.set({ crossOrigin: 'anonymous' });
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
-      img.set({
-        originX: 'center',
-        originY: 'center',
-        left: canvas.getWidth() / 2,
-        top: canvas.getHeight() / 2,
-        selectable: true,
-        prxBlobKey: null,
-        prxSrcUrl: clean
-      });
+      img.set({ originX:'center', originY:'center', left:canvas.getWidth()/2, top:canvas.getHeight()/2, selectable:true, prxBlobKey:null, prxSrcUrl:clean });
       ensurePrxId(img);
       canvas.add(img);
       canvas.setActiveObject(img);
@@ -559,15 +599,7 @@
     fabric.Image.fromURL(url, (img) => {
       if (!img) { if (url) setTimeout(() => URL.revokeObjectURL(url), 2000); return; }
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
-      img.set({
-        originX: 'center',
-        originY: 'center',
-        left: canvas.getWidth() / 2,
-        top: canvas.getHeight() / 2,
-        selectable: true,
-        prxBlobKey: key,
-        prxSrcUrl: null
-      });
+      img.set({ originX:'center', originY:'center', left:canvas.getWidth()/2, top:canvas.getHeight()/2, selectable:true, prxBlobKey:key, prxSrcUrl:null });
       ensurePrxId(img);
       canvas.add(img);
       canvas.setActiveObject(img);
@@ -603,13 +635,11 @@
     const text    = (uriList || plain || '').trim();
     if (text && isProbablyUrl(text)) {
       if (!ensureCanAdd(1)) return;
-      addImageFromUrl(text, null); // 単発 → 内部で1ステップとして登録
+      addImageFromUrl(text, null); // 単発
     }
   });
 
-  function isProbablyUrl(s) {
-    try { new URL(s); return true; } catch { return false; }
-  }
+  function isProbablyUrl(s) { try { new URL(s); return true; } catch { return false; } }
 
   // -------- クリップボード貼り付け --------
   window.addEventListener('paste', async (e) => {
@@ -678,7 +708,7 @@
     });
   }
 
-  // -------- キーボードショートカット（Delete/Backspace/Copy/Undo） --------
+  // -------- キーボードショートカット（Delete/Backspace/Copy/Undo/Redo） --------
   window.addEventListener('keydown', async (e) => {
     if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.isContentEditable)) return;
 
@@ -686,6 +716,12 @@
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
       e.preventDefault();
       await Undo.undo();
+      return;
+    }
+    // Ctrl/⌘ + Shift + Z または Ctrl/⌘ + Y = Redo
+    if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && (e.key === 'z' || e.key === 'Z')) || e.key === 'y' || e.key === 'Y')) {
+      e.preventDefault();
+      await Undo.redo();
       return;
     }
 
@@ -729,15 +765,18 @@
     }
   });
 
-  // 変形のUndo収集：押下でスナップショット、解放で差分を確認
+  // 変形のUndo収集
   canvas.on('mouse:down', () => Undo.onPointerDown());
   canvas.on('mouse:up',   () => Undo.onPointerUp());
 
-  // -------- 永続化（IndexedDB）--------
+  // -------- 永続化（IndexedDB） + GC --------
   let saveTimer = null;
   function scheduleSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(saveNow, 400);
+    saveTimer = setTimeout(async () => {
+      await saveNow();
+      scheduleGc(); // 保存のたびにGCをスケジュール
+    }, 400);
   }
 
   async function saveNow() {
@@ -754,14 +793,12 @@
     const saved = await loadBoardJSON();
     if (!saved?.json) return;
 
-    // JSON をロード。画像の prxBlobKey/prxSrcUrl を見て src を復元
     const reviveQueue = [];
     canvas.loadFromJSON(saved.json, () => {
       const imgs = canvas.getObjects('image');
       let needResave = false;
 
       for (const img of imgs) {
-        // center 原点/centeredScaling の整合
         if (img.originX !== 'center' || img.originY !== 'center') {
           const cx = img.left + img.getScaledWidth() / 2;
           const cy = img.top  + img.getScaledHeight() / 2;
@@ -775,7 +812,6 @@
         const url = img.prxSrcUrl  || null;
 
         if (key) {
-          // 非同期で Blob を取得して objectURL に差し替え
           reviveQueue.push(
               (async () => {
                 try {
@@ -785,15 +821,12 @@
                     await new Promise((res) => img.setSrc(objUrl, () => res()));
                     setTimeout(() => { try { URL.revokeObjectURL(objUrl); } catch {} }, 2000);
                   }
-                } catch (e) {
-                  console.warn('image revive failed (blob):', e);
-                }
+                } catch (e) { console.warn('image revive failed (blob):', e); }
               })()
           );
         } else if (url) {
-          // URL 参照のまま
+          // URL参照のまま
         } else {
-          // srcが無い場合は将来の不整合回避のため保存更新
           needResave = true;
         }
       }
@@ -801,17 +834,79 @@
       Promise.allSettled(reviveQueue).then(() => {
         canvas.renderAll();
         enforceImageLimitAfterLoad();
-        if (needResave) scheduleSave(); // 正規化後に保存
+        if (needResave) scheduleSave();
+        scheduleGc(); // 起動時にもGCを計画
       });
     });
   }
   loadBoard();
 
-  // 永続化トリガ
   ['object:added', 'object:modified', 'object:removed'].forEach(ev => {
     canvas.on(ev, scheduleSave);
   });
 
-  // -------- D&D/貼り付け補助（将来のUI拡張用のフックを残す） --------
+  // ===== 参照されないBlobのGC =====
+  const GC_GRACE_MS = 10 * 60 * 1000; // 10分猶予
+  const GC_INTERVAL_MIN = 2 * 60 * 1000; // 実行間隔（最短2分）
+  let lastGcAt = 0;
+  let gcTimer = null;
+
+  function collectReferencedBlobKeys(){
+    const refs = new Set();
+    // Canvas 上
+    for (const o of canvas.getObjects('image')){
+      if (o.prxBlobKey) refs.add(o.prxBlobKey);
+    }
+    // Undo/Redo スタック内（JSONに含まれる）
+    const { undoStack, redoStack, batches } = Undo.stacks();
+    const scanActs = (arr) => {
+      for (const act of arr){
+        if (act.items){ // ADD
+          for (const it of act.items){ const k = it.json?.prxBlobKey; if (k) refs.add(k); }
+        }
+        if (act.objects){ // REMOVE/AUTOLIMIT
+          for (const oinfo of act.objects){ const k = oinfo.json?.prxBlobKey; if (k) refs.add(k); }
+        }
+        if (act.before){ /* transform: 画像のBlobKeyは関与しない */ }
+      }
+    };
+    scanActs(undoStack); scanActs(redoStack);
+    // 進行中のバッチ（確定待ち）
+    batches.forEach(b => {
+      for (const it of b.items){ const k = it.json?.prxBlobKey; if (k) refs.add(k); }
+    });
+    return refs;
+  }
+
+  function scheduleGc(){
+    const now = Date.now();
+    if (now - lastGcAt < GC_INTERVAL_MIN) return; // 頻度制御
+    clearTimeout(gcTimer);
+    gcTimer = setTimeout(runBlobGc, 1500); // 少し待ってから
+  }
+
+  async function runBlobGc(){
+    lastGcAt = Date.now();
+    try{
+      const refs = collectReferencedBlobKeys();
+      const rows = await idbListAll('images'); // {id, blob, type, created}
+      const cutoff = Date.now() - GC_GRACE_MS;
+      let deleted = 0;
+      for (const r of rows){
+        const id = r.id;
+        const created = r.created || 0;
+        if (!refs.has(id) && created < cutoff){
+          // 参照なし かつ 猶予済み
+          await idbDelete('images', id);
+          deleted++;
+        }
+      }
+      if (deleted) console.debug('[PureFab/GC] deleted blobs:', deleted);
+    }catch(e){
+      console.warn('[PureFab/GC] failed:', e);
+    }
+  }
+
+  // -------- 将来拡張用フック --------
   // クリックで URL 追加用の入力を後から足したくなった場合に備え、ここに空関数を残すだけ
 })();
