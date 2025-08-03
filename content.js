@@ -9,6 +9,18 @@
   const STYLE_ID = APP_ID + '-style';
   const UI_OPEN_BTN_ID = APP_ID + '-opener';
 
+  // ==== デバッグヘルパ ====
+  const DBG = true;
+  const log  = (...a)=>{ if(DBG) console.log('[PureFab/DBG]', ...a); };
+  const warn = (...a)=>{ console.warn('[PureFab/DBG]', ...a); };
+  const group = (title, fn, collapsed=true) => {
+    if (!DBG) { try{ fn(); }catch(e){ warn('group fn error', e); } return; }
+    try {
+      (collapsed ? console.groupCollapsed : console.group)('[PureFab/DBG]', title);
+      fn();
+    } finally { console.groupEnd(); }
+  };
+
   // ==== 二重起動ガード ====
   if (window.__PRX_PUREFAB_ACTIVE__) {
     console.debug('[PureFab] already active, skip init.');
@@ -54,6 +66,7 @@
 
   // 離脱時にも片付け＋フラグ解除
   const __pf_cleanup__ = () => {
+    log('cleanup start');
     try {
       const n1 = document.getElementById(APP_ID);
       if (n1 && n1.parentNode) n1.parentNode.removeChild(n1);
@@ -63,6 +76,7 @@
       if (n3 && n3.parentNode) n3.parentNode.removeChild(n3);
     } catch {}
     try { delete window.__PRX_PUREFAB_ACTIVE__; } catch {}
+    log('cleanup done');
   };
   window.addEventListener('pagehide', __pf_cleanup__, { once: true });
   window.addEventListener('unload',   __pf_cleanup__, { once: true });
@@ -82,55 +96,63 @@
 
   function idbOpen() {
     if (__db) return Promise.resolve(__db);
+    log('idbOpen() opening', DB_NAME, 'ver', DB_VER);
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VER);
       req.onupgradeneeded = (ev) => {
         const db = ev.target.result;
+        log('idb upgrade needed; stores=', Array.from(db.objectStoreNames||[]));
         if (!db.objectStoreNames.contains('images')) {
           db.createObjectStore('images', { keyPath: 'id' }); // {id, blob, type, created}
+          log('created store: images');
         }
         if (!db.objectStoreNames.contains('boards')) {
           db.createObjectStore('boards', { keyPath: 'id' }); // {id, json, updated}
+          log('created store: boards');
         }
       };
-      req.onsuccess = () => { __db = req.result; resolve(__db); };
-      req.onerror   = () => reject(req.error);
+      req.onsuccess = () => { __db = req.result; log('idb opened'); resolve(__db); };
+      req.onerror   = () => { warn('idb open error', req.error); reject(req.error); };
     });
   }
 
   async function idbPut(store, value) {
     const db  = await idbOpen();
+    log('idbPut', store, value?.id);
     return new Promise((resolve, reject) => {
       const tx  = db.transaction(store, 'readwrite');
-      tx.oncomplete = () => resolve(true);
-      tx.onerror    = () => reject(tx.error);
+      tx.oncomplete = () => { log('idbPut complete', store, value?.id); resolve(true); };
+      tx.onerror    = () => { warn('idbPut error', tx.error); reject(tx.error); };
       tx.objectStore(store).put(value);
     });
   }
 
   async function idbGet(store, key) {
     const db  = await idbOpen();
+    log('idbGet', store, key);
     return new Promise((resolve, reject) => {
       const tx  = db.transaction(store, 'readonly');
-      tx.onerror = () => reject(tx.error);
+      tx.onerror = () => { warn('idbGet tx error', tx.error); reject(tx.error); };
       const req = tx.objectStore(store).get(key);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror   = () => reject(req.error);
+      req.onsuccess = () => { log('idbGet result', store, key, req.result ? 'HIT' : 'MISS'); resolve(req.result || null); };
+      req.onerror   = () => { warn('idbGet req error', req.error); reject(req.error); };
     });
   }
 
   async function idbDelete(store, key) {
     const db  = await idbOpen();
+    log('idbDelete', store, key);
     return new Promise((resolve, reject) => {
       const tx  = db.transaction(store, 'readwrite');
-      tx.oncomplete = () => resolve(true);
-      tx.onerror    = () => reject(tx.error);
+      tx.oncomplete = () => { log('idbDelete complete', store, key); resolve(true); };
+      tx.onerror    = () => { warn('idbDelete error', tx.error); reject(tx.error); };
       tx.objectStore(store).delete(key);
     });
   }
 
   async function idbListAll(store) {
     const db  = await idbOpen();
+    log('idbListAll', store);
     return new Promise((resolve, reject) => {
       const tx  = db.transaction(store, 'readonly');
       const st  = tx.objectStore(store);
@@ -139,33 +161,42 @@
         const cur = e.target.result;
         if (cur) { out.push(cur.value); cur.continue(); }
       };
-      tx.oncomplete = () => resolve(out);
-      tx.onerror    = () => reject(tx.error);
+      tx.oncomplete = () => { log('idbListAll done', store, out.length, 'rows'); resolve(out); };
+      tx.onerror    = () => { warn('idbListAll error', tx.error); reject(tx.error); };
     });
   }
 
   async function saveBoardJSON(json) {
+    log('saveBoardJSON start');
     const data = { id: 'main', json, updated: Date.now() };
     await idbPut('boards', data);
+    log('saveBoardJSON done');
   }
 
   async function loadBoardJSON() {
+    log('loadBoardJSON');
     const row = await idbGet('boards', 'main');
+    log('loadBoardJSON result', !!row);
     return row ? row.json : null;
   }
 
   async function saveImageBlob(blob) {
     const id = (crypto?.randomUUID && crypto.randomUUID()) || ('img-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+    group('saveImageBlob ' + id, () => {
+      log('type', blob?.type, 'size', blob?.size);
+    });
     await idbPut('images', { id, blob, type: blob.type || 'application/octet-stream', created: Date.now() });
     return id;
   }
 
   async function getImageBlob(id) {
+    log('getImageBlob', id);
     const row = await idbGet('images', id);
+    log('getImageBlob result', id, !!row);
     return row ? row.blob : null;
   }
 
-  // -------- スタイル注入（可変：可視/非表示で body margin を切替） --------
+  // -------- スタイル注入 --------
   const style = document.createElement('style');
   style.id = STYLE_ID;
 
@@ -173,26 +204,20 @@
     const v = localStorage.getItem(LS_KEY_VIS);
     if (v === '0') return false;
     if (v === '1') return true;
-    return true; // 既定は表示
+    return true;
   })();
+  log('initialVisible', initialVisible);
 
-  // ページのレイアウト更新を確実に走らせる
   function nudgePageLayout(){
-    // 1) 強制リフロー（読み取り）
     void document.body.offsetWidth;
-    // 2) resize イベントを複数回投げて Pinterest 側のレイアウトリスナーを起動
     const fire = () => window.dispatchEvent(new Event('resize'));
-    fire();
-    setTimeout(fire, 120);
-    setTimeout(fire, 260);
+    fire(); setTimeout(fire, 120); setTimeout(fire, 260);
   }
 
   function applyGlobalStyle(visible){
     const mr = visible ? `${SPLIT_RATIO * 100}vw` : '0';
-    // data 属性で状態を明示（必要なら外部CSSから参照可能）
     document.documentElement.setAttribute('data-prx-open', visible ? '1' : '0');
 
-    // 検索バー（Pinterest 上部バー）の幅：開いているときのみ 68%、閉じたら auto
     const topBarWidthRule = visible
         ? `.jzS.un8.C9i.TB_ { width: 68% !important; }`
         : `.jzS.un8.C9i.TB_ { width: auto !important; }`;
@@ -207,7 +232,7 @@
   applyGlobalStyle(initialVisible);
   (document.head || document.documentElement).appendChild(style);
 
-  // -------- 右ペインDOM（トップバーなし／隠すボタンのみ） --------
+  // -------- 右ペインDOM --------
   const host = document.createElement('div');
   host.id = APP_ID;
   Object.assign(host.style, {
@@ -223,12 +248,12 @@
     userSelect: 'none',
     boxSizing: 'border-box',
     borderLeft: '1px solid #000',
-    boxShadow: '-4px 0 8px rgba(0,0,0,0.3)', // 影を消したい場合はこの行を削除 or コメントアウト
+    boxShadow: '-4px 0 8px rgba(0,0,0,0.3)', // 影を消すならこの行を削除
     transform: initialVisible ? 'translateX(0)' : 'translateX(100%)',
     transition: 'transform 200ms ease'
   });
 
-  // 隠すボタン（アイコンは変更しない）
+  // 隠すボタン
   const hideBtn = document.createElement('button');
   hideBtn.type = 'button';
   hideBtn.textContent = ' ⟩⟩ ';
@@ -238,12 +263,12 @@
     right: '8px',
     zIndex: String(Z + 1),
     border: '1px solid #3a3a3a',
-    background: '#222',          // opener と同じ
+    background: '#222',
     color: '#ddd',
     width: '32px',
     height: '32px',
     padding: '0',
-    borderRadius: '999px',       // 正円
+    borderRadius: '999px',
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -293,7 +318,7 @@
   host.append(hideBtn, wrap);
   (document.body || document.documentElement).appendChild(host);
 
-  // 「開く」ピル（折りたたみ時のみ表示）
+  // 「開く」ピル
   const opener = document.createElement('button');
   opener.id = UI_OPEN_BTN_ID;
   opener.textContent = ' ⟨⟨ ';
@@ -317,12 +342,11 @@
   document.body.appendChild(opener);
 
   function setBoardVisible(visible){
+    log('setBoardVisible', visible);
     host.style.transform = visible ? 'translateX(0)' : 'translateX(100%)';
     applyGlobalStyle(visible);
     opener.style.display = visible ? 'none' : 'block';
     localStorage.setItem(LS_KEY_VIS, visible ? '1' : '0');
-
-    // ボードのアニメ後にキャンバスとページ側の再レイアウトを同期
     const after = () => { resize(); safeRender(); nudgePageLayout(); };
     setTimeout(after, 210);
   }
@@ -339,6 +363,7 @@
     viewportTransform: [1, 0, 0, 1, 0, 0] // パン/ズーム無効
   });
   canvas.enableRetinaScaling = true;
+  log('fabric canvas created');
 
   // === rAF 集約レンダ ===
   let __rafId = 0;
@@ -350,7 +375,7 @@
     });
   }
 
-  // === まとめ処理（描画一時停止） ===
+  // === まとめ処理 ===
   async function withRenderSuspended(fn) {
     const prev = canvas.renderOnAddRemove;
     canvas.renderOnAddRemove = false;
@@ -360,7 +385,7 @@
     }
   }
 
-  // ==== Pointer Capture（ワープ/ガタつき対策） ====
+  // ==== Pointer Capture ====
   const upper = canvas.upperCanvasEl;
   upper.style.touchAction = 'none';
   upper.addEventListener('pointerdown', (ev) => { try { upper.setPointerCapture(ev.pointerId); } catch {} });
@@ -376,7 +401,7 @@
   fabric.Object.prototype.originX = 'center';
   fabric.Object.prototype.originY = 'center';
 
-  // ===== Undo/Redo + バッチ確定（タイムアウト） =====
+  // ===== Undo/Redo + バッチ確定 =====
   const UNDO_LIMIT = 20;
   const CUSTOM_PROPS = ['selectable','originX','originY','centeredScaling','prxBlobKey','prxSrcUrl','prxId'];
   const UNDO_TYPES = { ADD:'add', REMOVE:'remove', TRANSFORM:'transform', AUTOLIMIT:'autoLimitDelete' };
@@ -389,9 +414,7 @@
 
   const TF_KEYS = ['left','top','scaleX','scaleY','angle','flipX','flipY','skewX','skewY','opacity'];
   const pickProps = (obj) => {
-    const out = {};
-    TF_KEYS.forEach(k => out[k] = obj[k]);
-    return out;
+    const out = {}; TF_KEYS.forEach(k => out[k] = obj[k]); return out;
   };
 
   function serializeForRemove(obj){
@@ -407,30 +430,48 @@
     const blobKey = json.prxBlobKey || null;
     const srcUrl  = json.prxSrcUrl  || json.src || null;
 
-    if (blobKey){
-      try{
-        const blob = await getImageBlob(blobKey);
-        if (blob){
-          const objUrl = URL.createObjectURL(blob);
-          return new Promise((resolve)=> {
+    return await new Promise(async (resolve) => {
+      group('restoreImageFromJSON', async () => { log('index', index, 'blobKey', blobKey, 'srcUrl', !!srcUrl); });
+      if (blobKey){
+        try{
+          const blob = await getImageBlob(blobKey);
+          if (blob){
+            const objUrl = URL.createObjectURL(blob);
             fabric.Image.fromURL(objUrl, (img)=>{
-              if (img){ applyCommon(img); canvas.insertAt(img, Math.max(0,index), true); safeRender(); }
+              if (img){
+                applyCommon(img);
+                canvas.insertAt(img, Math.max(0,index), true);
+                safeRender();
+                log('restore from blobKey OK', blobKey);
+              } else {
+                warn('fabric.Image.fromURL returned null for blobKey', blobKey);
+              }
               setTimeout(()=>{ try{ URL.revokeObjectURL(objUrl); }catch{} }, 2000);
               resolve(img || null);
             }, { crossOrigin: 'anonymous' });
-          });
-        }
-      }catch(e){ console.warn('restore blob failed', e); }
-    }
-    if (srcUrl){
-      return new Promise((resolve)=> {
+            return;
+          } else {
+            warn('getImageBlob MISS', blobKey);
+          }
+        }catch(e){ warn('restore blob failed', e); }
+      }
+      if (srcUrl){
         fabric.Image.fromURL(srcUrl, (img)=>{
-          if (img){ applyCommon(img); canvas.insertAt(img, Math.max(0,index), true); safeRender(); }
+          if (img){
+            applyCommon(img);
+            canvas.insertAt(img, Math.max(0,index), true);
+            safeRender();
+            log('restore from srcUrl OK');
+          } else {
+            warn('fabric.Image.fromURL returned null for srcUrl');
+          }
           resolve(img || null);
         }, { crossOrigin: 'anonymous' });
-      });
-    }
-    return null;
+        return;
+      }
+      warn('no blobKey/srcUrl in JSON; cannot restore');
+      resolve(null);
+    });
   }
 
   const Undo = (() => {
@@ -442,6 +483,7 @@
     function clearRedo(){ redoStack.length = 0; }
 
     function push(action, {fromReplay=false} = {}){
+      log('Undo.push', action.type, {fromReplay});
       undoStack.push(action);
       if (undoStack.length > UNDO_LIMIT) undoStack.shift();
       if (!fromReplay) clearRedo();
@@ -452,6 +494,7 @@
       const b = { type, items:[], remaining: Math.max(1, expectedCount|0), done:false, timer:null };
       b.timer = setTimeout(() => finalizeBatch(token), 4000);
       batches.set(token, b);
+      log('Undo.beginBatch', token, type, 'expect', expectedCount);
       return token;
     }
 
@@ -465,6 +508,7 @@
         push({ type: UNDO_TYPES.ADD, items: b.items.map(x => ({ id:x.id, json:x.json, index:x.index })) });
       }
       batches.delete(token);
+      log('Undo.finalizeBatch', token, 'items', (b.items||[]).length);
     }
 
     function recordAdd(obj, token){
@@ -480,10 +524,12 @@
       if (b.remaining === 0 && !b.done){
         finalizeBatch(token);
       }
+      log('Undo.recordAdd', obj.prxId, 'index', item.index, 'token', token);
     }
 
     async function doUndo(){
       const act = undoStack.pop();
+      log('Undo.undo pop', act?.type);
       if (!act) { toast('これ以上戻せません'); return; }
 
       if (act.type === UNDO_TYPES.ADD){
@@ -524,6 +570,7 @@
 
     async function doRedo(){
       const act = redoStack.pop();
+      log('Undo.redo pop', act?.type);
       if (!act) { toast('これ以上やり直せません'); return; }
 
       if (act.type === UNDO_TYPES.ADD){
@@ -564,12 +611,10 @@
       }
     }
 
-    function onPointerDown(){
+    function onPointerDown(opt){
       const sel = canvas.getActiveObjects() || [];
       if (!sel.length) { transformSnapshot = null; return; }
-      transformSnapshot = {
-        items: sel.map(o => ({ id: ensurePrxId(o), props: pickProps(o) }))
-      };
+      transformSnapshot = { items: sel.map(o => ({ id: ensurePrxId(o), props: pickProps(o) })) };
       fabric.Object.prototype.objectCaching = false;
     }
     function onPointerUp(){
@@ -587,11 +632,7 @@
       }
       transformSnapshot = null;
       if (after.length){
-        const action = {
-          type: UNDO_TYPES.TRANSFORM,
-          before,
-          after
-        };
+        const action = { type: UNDO_TYPES.TRANSFORM, before, after };
         push(action);
         safeRender();
       }
@@ -607,7 +648,7 @@
     };
   })();
 
-  // === Shift+Alt フリップ（上下/左右） ===
+  // === Shift+Alt フリップ ===
   const FlipGesture = (() => {
     const THRESH = 16;
     let active = false;
@@ -696,6 +737,7 @@
   const resize = () => {
     const rect = wrap.getBoundingClientRect();
     canvas.setDimensions({ width: rect.width, height: rect.height }, { backstoreOnly: false });
+    log('canvas resized', rect.width, rect.height, 'images=', canvas.getObjects('image').length);
     safeRender();
   };
   new ResizeObserver(resize).observe(wrap);
@@ -727,6 +769,7 @@
       toast(`画像は最大 ${MAX_IMAGES} 枚までに制限しました`);
       safeRender();
       scheduleSave();
+      log('enforceImageLimitAfterLoad removed', removed.length);
     }
   }
 
@@ -747,16 +790,18 @@
 
     let blob = null;
     try {
+      log('fetch image url', clean);
       const res = await fetch(clean, { mode: 'cors', credentials: 'omit' });
       if (!res.ok) throw new Error('fetch not ok');
       blob = await res.blob();
-    } catch { blob = null; }
+      log('fetch ok, blob', blob?.type, blob?.size);
+    } catch (e) { blob = null; warn('fetch failed, fallback to direct url', e); }
 
     if (blob) {
       const key = await saveImageBlob(blob);
       const urlObj = objURLFromBlob(blob);
       fabric.Image.fromURL(urlObj, (img) => {
-        if (!img) { if (urlObj) setTimeout(() => URL.revokeObjectURL(urlObj), 2000); return; }
+        if (!img) { if (urlObj) setTimeout(() => URL.revokeObjectURL(urlObj), 2000); warn('fabric from blob null'); return; }
         img.set({ crossOrigin: 'anonymous' });
         fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
         img.set({ originX:'center', originY:'center', left:canvas.getWidth()/2, top:canvas.getHeight()/2, selectable:true, prxBlobKey:key, prxSrcUrl:null });
@@ -766,13 +811,14 @@
         Undo.recordAdd(img, batchToken);
         safeRender();
         scheduleSave();
+        log('added image from BLOB key', key, 'objects=', getImageCount());
         setTimeout(() => { try { URL.revokeObjectURL(urlObj); } catch {} }, 2000);
       }, { crossOrigin: 'anonymous' });
       return;
     }
 
     fabric.Image.fromURL(clean, (img) => {
-      if (!img) return;
+      if (!img) { warn('fabric from URL null'); return; }
       img.set({ crossOrigin: 'anonymous' });
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
       img.set({ originX:'center', originY:'center', left:canvas.getWidth()/2, top:canvas.getHeight()/2, selectable:true, prxBlobKey:null, prxSrcUrl:clean });
@@ -782,12 +828,14 @@
       Undo.recordAdd(img, batchToken);
       safeRender();
       scheduleSave();
+      log('added image from URL', clean, 'objects=', getImageCount());
     }, { crossOrigin: 'anonymous' });
   }
 
   function addImageFromFile(file, batchToken) {
     if (!file || !file.type?.startsWith('image/')) return;
     if (!ensureCanAdd(1)) return;
+    log('addImageFromFile', file.name, file.type, file.size);
     addImageFromBlob(file, batchToken);
   }
 
@@ -798,7 +846,7 @@
     const key = await saveImageBlob(blob);
     const url = objURLFromBlob(blob);
     fabric.Image.fromURL(url, (img) => {
-      if (!img) { if (url) setTimeout(() => URL.revokeObjectURL(url), 2000); return; }
+      if (!img) { if (url) setTimeout(() => URL.revokeObjectURL(url), 2000); warn('fabric from blob null'); return; }
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
       img.set({ originX:'center', originY:'center', left:canvas.getWidth()/2, top:canvas.getHeight()/2, selectable:true, prxBlobKey:key, prxSrcUrl:null });
       ensurePrxId(img);
@@ -807,6 +855,7 @@
       Undo.recordAdd(img, batchToken);
       safeRender();
       scheduleSave();
+      log('added image from FILE blob key', key, 'objects=', getImageCount());
       setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 2000);
     }, { crossOrigin: 'anonymous' });
   }
@@ -949,6 +998,7 @@
         safeRender();
         scheduleSave();
         e.preventDefault();
+        log('deleted objects', removed.length);
       }
       return;
     }
@@ -984,6 +1034,7 @@
   function scheduleSave() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
+      log('scheduleSave fired');
       if ('requestIdleCallback' in window) {
         requestIdleCallback(async () => { await saveNow(); scheduleGc(); }, { timeout: 1500 });
       } else {
@@ -992,70 +1043,60 @@
     }, 400);
   }
 
+  // ==== 修正点1: 保存時に blob: をスクラブ ====
   async function saveNow() {
     try {
-      const json = canvas.toJSON(CUSTOM_PROPS);
-      await saveBoardJSON({ v: 2, json });
+      // src を含めた JSON を取得して blob: を除去
+      const json = canvas.toJSON(['selectable','originX','originY','centeredScaling','prxBlobKey','prxSrcUrl','prxId','src']);
+      if (Array.isArray(json.objects)) {
+        for (const o of json.objects) {
+          if (o.type === 'image' && typeof o.src === 'string' && o.src.startsWith('blob:')) {
+            o.src = null; // 復元は prxBlobKey / prxSrcUrl 経由で行う
+          }
+        }
+      }
+      log('saveNow start; objects=', canvas.getObjects().length, 'images=', getImageCount());
+      await saveBoardJSON({ v: 3, json }); // v:3 に更新
+      log('saveNow ok');
     } catch (e) {
-      console.warn('save board failed:', e);
+      warn('save board failed:', e);
       toast('保存に失敗しました', 1200);
     }
   }
 
+  // ==== 修正点2: 読込は Fabric.loadFromJSON を使わず自前復元 ====
   async function loadBoard() {
+    log('loadBoard start');
     const saved = await loadBoardJSON();
-    if (!saved?.json) return;
+    if (!saved?.json) { log('no saved board'); return; }
 
-    const reviveQueue = [];
-    canvas.loadFromJSON(saved.json, () => {
-      const imgs = canvas.getObjects('image');
-      let needResave = false;
+    const data = saved.json;
+    const objs = Array.isArray(data.objects) ? data.objects : [];
+    log('custom load: objects=', objs.length);
 
-      for (const img of imgs) {
-        if (img.originX !== 'center' || img.originY !== 'center') {
-          const cx = img.left + img.getScaledWidth() / 2;
-          const cy = img.top  + img.getScaledHeight() / 2;
-          img.set({ originX: 'center', originY: 'center', left: cx, top: cy });
-        }
-        img.centeredScaling = true;
-        ensurePrxId(img);
-        img.setCoords();
+    // クリアして背景色を設定
+    canvas.clear();
+    canvas.backgroundColor = CANVAS_BG;
 
-        const key = img.prxBlobKey || null;
-        const url = img.prxSrcUrl  || null;
+    // 画像だけ復元（src は参照しない）
+    const revivePromises = [];
+    let idx = 0;
+    for (const o of objs) {
+      if (o.type !== 'image') continue;
+      revivePromises.push(restoreImageFromJSON(o, idx++));
+    }
 
-        if (key) {
-          reviveQueue.push(
-              (async () => {
-                try {
-                  const blob = await getImageBlob(key);
-                  if (blob) {
-                    const objUrl = objURLFromBlob(blob);
-                    await new Promise((res) => img.setSrc(objUrl, () => res()));
-                    setTimeout(() => { try { URL.revokeObjectURL(objUrl); } catch {} }, 2000);
-                  }
-                } catch (e) { console.warn('image revive failed (blob):', e); }
-              })()
-          );
-        } else if (url) {
-          // URL参照のまま
-        } else {
-          needResave = true;
-        }
-      }
+    await Promise.allSettled(revivePromises);
+    log('custom load done; images=', canvas.getObjects('image').length);
 
-      Promise.allSettled(reviveQueue).then(() => {
-        safeRender();
-        enforceImageLimitAfterLoad();
-        if (needResave) scheduleSave();
-        scheduleGc();
-      });
-    });
+    safeRender();
+    enforceImageLimitAfterLoad();
+    scheduleGc();
   }
   loadBoard();
 
   ['object:added', 'object:modified', 'object:removed'].forEach(ev => {
-    canvas.on(ev, scheduleSave);
+    canvas.on(ev, () => { log('canvas event', ev, 'objs=', canvas.getObjects().length, 'imgs=', getImageCount()); scheduleSave(); });
   });
 
   // ===== 参照されないBlobのGC =====
@@ -1081,9 +1122,8 @@
       }
     };
     scanActs(undoStack); scanActs(redoStack);
-    batches.forEach(b => {
-      for (const it of b.items){ const k = it.json?.prxBlobKey; if (k) refs.add(k); }
-    });
+    batches.forEach(b => { for (const it of b.items){ const k = it.json?.prxBlobKey; if (k) refs.add(k); } });
+    log('collectReferencedBlobKeys size', refs.size);
     return refs;
   }
 
@@ -1094,6 +1134,7 @@
       const cutoff = Date.now() - GC_GRACE_MS;
 
       let i = 0;
+      let deleted = 0;
       async function step(deadline) {
         let count = 0;
         while (i < rows.length && (count < limit) && (deadline?.timeRemaining?.() > 5 || !deadline)) {
@@ -1101,19 +1142,21 @@
           const id = r.id;
           const created = r.created || 0;
           if (!refs.has(id) && created < cutoff) {
-            try { await idbDelete('images', id); } catch {}
+            try { await idbDelete('images', id); deleted++; } catch {}
           }
           count++;
         }
         if (i < rows.length) {
           if ('requestIdleCallback' in window) requestIdleCallback(step);
           else setTimeout(() => step(), 0);
+        } else {
+          log('GC done; scanned', rows.length, 'deleted', deleted);
         }
       }
       if ('requestIdleCallback' in window) requestIdleCallback(step);
       else setTimeout(() => step(), 0);
     } catch(e) {
-      console.warn('[PureFab/GC] failed:', e);
+      warn('[PureFab/GC] failed:', e);
     }
   }
 
@@ -1121,13 +1164,14 @@
     const now = Date.now();
     if (now - lastGcAt < GC_INTERVAL_MIN) return;
     clearTimeout(gcTimer);
-    gcTimer = setTimeout(() => { lastGcAt = Date.now(); runBlobGcChunked(); }, 1500);
+    gcTimer = setTimeout(() => { lastGcAt = Date.now(); log('GC scheduled'); runBlobGcChunked(); }, 1500);
   }
 
   // ---- タブ可視状態で描画制御 ----
   document.addEventListener('visibilitychange', () => {
     const hidden = document.hidden;
     canvas.renderOnAddRemove = !hidden;
+    log('visibilitychange hidden=', hidden);
     if (!hidden) safeRender();
   });
 
