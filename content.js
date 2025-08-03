@@ -1106,24 +1106,12 @@
   let gcTimer = null;
 
   function collectReferencedBlobKeys(){
+    // キャンバス上の image オブジェクトの prxBlobKey のみを参照扱いにする
     const refs = new Set();
-    for (const o of canvas.getObjects('image')){
+    for (const o of canvas.getObjects('image')) {
       if (o.prxBlobKey) refs.add(o.prxBlobKey);
     }
-    const { undoStack, redoStack, batches } = Undo.stacks();
-    const scanActs = (arr) => {
-      for (const act of arr){
-        if (act.items){
-          for (const it of act.items){ const k = it.json?.prxBlobKey; if (k) refs.add(k); }
-        }
-        if (act.objects){
-          for (const oinfo of act.objects){ const k = oinfo.json?.prxBlobKey; if (k) refs.add(k); }
-        }
-      }
-    };
-    scanActs(undoStack); scanActs(redoStack);
-    batches.forEach(b => { for (const it of b.items){ const k = it.json?.prxBlobKey; if (k) refs.add(k); } });
-    log('collectReferencedBlobKeys size', refs.size);
+    log('collectReferencedBlobKeys (canvas-only) size', refs.size);
     return refs;
   }
 
