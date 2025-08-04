@@ -397,9 +397,20 @@
   canvas.on('mouse:down', () => { __pf_dragging__ = true; document.body.style.userSelect = 'none'; });
   canvas.on('mouse:up',   () => { __pf_dragging__ = false; document.body.style.userSelect = ''; });
 
-  fabric.Object.prototype.centeredScaling = true;
+  // === スケーリング基準（ここを変更） ===
+  fabric.Object.prototype.centeredScaling = false; // 対角ハンドルを基準に拡大縮小
   fabric.Object.prototype.originX = 'center';
   fabric.Object.prototype.originY = 'center';
+
+  // 複数選択（activeSelection）でも corner-based にする
+  function ensureSelectionScalingMode() {
+    const sel = canvas.getActiveObject();
+    if (sel && sel.type === 'activeSelection') {
+      sel.centeredScaling = false;
+    }
+  }
+  canvas.on('selection:created', ensureSelectionScalingMode);
+  canvas.on('selection:updated', ensureSelectionScalingMode);
 
   // ===== Undo/Redo + バッチ確定 =====
   const UNDO_LIMIT = 20;
@@ -425,7 +436,8 @@
 
   async function restoreImageFromJSON(json, index){
     const prxId = json.prxId || ((crypto?.randomUUID && crypto.randomUUID()) || ('oid-' + Math.random().toString(36).slice(2)));
-    const applyCommon = (img) => { img.set(json); img.prxId = prxId; img.centeredScaling = true; img.setCoords(); };
+    // ★ centeredScaling を明示付与しない（グローバル設定を使う）
+    const applyCommon = (img) => { img.set(json); img.prxId = prxId; img.setCoords(); };
 
     const blobKey = json.prxBlobKey || null;
     const srcUrl  = json.prxSrcUrl  || json.src || null;
