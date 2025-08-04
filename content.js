@@ -1035,8 +1035,28 @@
     }
   });
 
-  // 変形のUndo収集 + フリップジェスチャ
-  canvas.on('mouse:down', (opt) => { Undo.onPointerDown(opt); FlipGesture.onMouseDown(opt); });
+  // === 画像クリックで最前面へ（ここを追加） ===
+  function bringClickedImageToFront(opt){
+    const t = opt?.target;
+    const e = opt?.e || {};
+    // 修飾キー（Shift/Ctrl/Meta）付きの操作時はスキップ（範囲選択や複数選択の邪魔をしない）
+    if (!t || t.type !== 'image' || e.shiftKey || e.ctrlKey || e.metaKey) return;
+    try {
+      t.bringToFront();
+      safeRender();
+      scheduleSave(); // レイヤ順を保存
+      log('bringToFront on click:', t.prxId || '(no id)');
+    } catch (err) {
+      warn('bringToFront failed', err);
+    }
+  }
+
+  // 変形のUndo収集 + フリップジェスチャ + 最前面化
+  canvas.on('mouse:down', (opt) => {
+    bringClickedImageToFront(opt);
+    Undo.onPointerDown(opt);
+    FlipGesture.onMouseDown(opt);
+  });
   canvas.on('mouse:move', (opt) => { FlipGesture.onMouseMove(opt); });
   canvas.on('mouse:up',   (opt) => { FlipGesture.onMouseUp(opt); Undo.onPointerUp(opt); });
   canvas.on('object:moving', (opt) => { FlipGesture.onObjectMoving(opt); });
