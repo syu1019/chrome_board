@@ -593,7 +593,44 @@
   });
   function isProbablyUrl(s){ try{ new URL(s); return true; }catch{ return false; } }
 
-  // -------- クリップボード貼り付け --------
+  // -------- Ctrl/⌘+V フォールバック用（clipboard.read / readText）--------
+  async function tryReadClipboardAndAdd() {
+    // 画像優先
+    if (navigator.clipboard?.read) {
+      try {
+        const items = await navigator.clipboard.read();
+        const imageItems = items.filter(it => it.types?.some(t => t.startsWith('image/')));
+        if (imageItems.length) {
+          let capacity = MAX_IMAGES - getImageCount();
+          if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return true; }
+          const take = imageItems.slice(0, capacity);
+          const token = Undo.beginBatch('add', take.length);
+          for (const it of take) {
+            const type = it.types.find(t => t.startsWith('image/'));
+            const blob = await it.getType(type);
+            await addImageFromBlob(blob, token);
+          }
+          return true;
+        }
+      } catch (err) {
+        log('clipboard.read() failed', err?.name || err);
+      }
+    }
+    // テキストURL
+    if (navigator.clipboard?.readText) {
+      try {
+        const text = (await navigator.clipboard.readText() || '').trim();
+        if (text && isProbablyUrl(text)) {
+          if (!ensureCanAdd(1)) return true;
+          await addImageFromUrl(text, null);
+          return true;
+        }
+      } catch {}
+    }
+    return false;
+  }
+
+  // -------- クリップボード貼り付け（capture で早取り）--------
   window.addEventListener('paste', async (e) => {
     const target = e.target; if (target && (target.tagName==='INPUT' || target.tagName==='TEXTAREA' || target.isContentEditable)) return;
     const cd = e.clipboardData; if (!cd) return;
@@ -606,9 +643,9 @@
       return;
     }
 
-    const text = cd.getData('text')?.trim();
+    const text = cd.getData('text/plain')?.trim();
     if (text && isProbablyUrl(text)) { if (!ensureCanAdd(1)) return; addImageFromUrl(text, null); }
-  });
+  }, true); // capture = true
 
   // ==== Copy 調査ユーティリティ ====
   async function __pf_logClipboardPerms() {
@@ -788,6 +825,13 @@
         try { await copyActiveImageToClipboard(); toast('画像をクリップボードへコピーしました'); }
         catch (err) { console.warn('clipboard write failed:', err); toast('コピーに失敗しました（ブラウザ設定や権限を確認してください）', 2000); }
       }
+    }
+
+    // Ctrl/⌘ + V フォールバック（サイトに paste を奪われても拾う）
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+      const ok = await tryReadClipboardAndAdd();
+      if (ok) { e.preventDefault(); return; }
+      // 失敗時は通常の paste（capture 済み）に任せる
     }
   });
 
