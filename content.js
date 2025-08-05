@@ -15,17 +15,23 @@
   const warn = (...a)=>{ console.warn('[PureFab/DBG]', ...a); };
   const group = (title, fn, collapsed=true) => {
     if (!DBG) { try{ fn(); }catch(e){ warn('group fn error', e); } return; }
-    try { (collapsed ? console.groupCollapsed : console.group)('[PureFab/DBG]', title); fn(); }
-    finally { console.groupEnd(); }
+    try {
+      (collapsed ? console.groupCollapsed : console.group)('[PureFab/DBG]', title);
+      fn();
+    } finally { console.groupEnd(); }
   };
 
   // ==== 二重起動ガード ====
-  if (window.__PRX_PUREFAB_ACTIVE__) { console.debug('[PureFab] already active, skip init.'); return; }
+  if (window.__PRX_PUREFAB_ACTIVE__) {
+    console.debug('[PureFab] already active, skip init.');
+    return;
+  }
   window.__PRX_PUREFAB_ACTIVE__ = true;
 
   // ---- 外部エラーフック ----
   (function setupErrorTaps() {
-    const tag = '%c[PureFab/ErrorTap]'; const sty = 'color:#0bf';
+    const tag = '%c[PureFab/ErrorTap]';
+    const sty = 'color:#0bf';
     window.addEventListener('error', (e) => {
       const msg = String(e.message || '');
       if (msg.includes('alphabetical') || msg.includes('uiState')) {
@@ -50,30 +56,24 @@
 
   // ----- 既存ノードのクリーンアップ -----
   try {
-    const oldHost  = document.getElementById(APP_ID); if (oldHost && oldHost.parentNode) oldHost.parentNode.removeChild(oldHost);
-    const oldStyle = document.getElementById(STYLE_ID); if (oldStyle && oldStyle.parentNode) oldStyle.parentNode.removeChild(oldStyle);
-    const oldOpen  = document.getElementById(UI_OPEN_BTN_ID); if (oldOpen && oldOpen.parentNode) oldOpen.parentNode.removeChild(oldOpen);
+    const oldHost  = document.getElementById(APP_ID);
+    if (oldHost && oldHost.parentNode) oldHost.parentNode.removeChild(oldHost);
+    const oldStyle = document.getElementById(STYLE_ID);
+    if (oldStyle && oldStyle.parentNode) oldStyle.parentNode.removeChild(oldStyle);
+    const oldOpen  = document.getElementById(UI_OPEN_BTN_ID);
+    if (oldOpen && oldOpen.parentNode) oldOpen.parentNode.removeChild(oldOpen);
   } catch {}
 
-  // 離脱時にも片付け＋フラグ解除（※あとで canvas を参照する）
+  // 離脱時にも片付け＋フラグ解除
   const __pf_cleanup__ = () => {
     log('cleanup start');
     try {
-      const n1 = document.getElementById(APP_ID); if (n1 && n1.parentNode) n1.parentNode.removeChild(n1);
-      const n2 = document.getElementById(STYLE_ID); if (n2 && n2.parentNode) n2.parentNode.removeChild(n2);
-      const n3 = document.getElementById(UI_OPEN_BTN_ID); if (n3 && n3.parentNode) n3.parentNode.removeChild(n3);
-    } catch {}
-    try {
-      // 画面離脱時に残っている blob: を掃除
-      if (window.__pf_canvas__) {
-        window.__pf_canvas__.getObjects('image').forEach(o=>{
-          try {
-            const el = o._element || o._originalElement;
-            const src = (el && el.src) || o.prxObjUrl;
-            if (src && typeof src === 'string' && src.startsWith('blob:')) URL.revokeObjectURL(src);
-          } catch {}
-        });
-      }
+      const n1 = document.getElementById(APP_ID);
+      if (n1 && n1.parentNode) n1.parentNode.removeChild(n1);
+      const n2 = document.getElementById(STYLE_ID);
+      if (n2 && n2.parentNode) n2.parentNode.removeChild(n2);
+      const n3 = document.getElementById(UI_OPEN_BTN_ID);
+      if (n3 && n3.parentNode) n3.parentNode.removeChild(n3);
     } catch {}
     try { delete window.__PRX_PUREFAB_ACTIVE__; } catch {}
     log('cleanup done');
@@ -82,7 +82,7 @@
   window.addEventListener('unload',   __pf_cleanup__, { once: true });
 
   // -------- 基本設定 --------
-  const SPLIT_RATIO = 0.30; // 右 30%
+  const SPLIT_RATIO = 0.30;                  // 右 30%（ボード）/ 左 70%（Pinterest）
   const Z           = 2147483600;
   const BG          = '#1c1c1c';
   const CANVAS_BG   = '#2a2a2a';
@@ -102,8 +102,14 @@
       req.onupgradeneeded = (ev) => {
         const db = ev.target.result;
         log('idb upgrade needed; stores=', Array.from(db.objectStoreNames||[]));
-        if (!db.objectStoreNames.contains('images')) db.createObjectStore('images', { keyPath: 'id' });
-        if (!db.objectStoreNames.contains('boards')) db.createObjectStore('boards', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('images')) {
+          db.createObjectStore('images', { keyPath: 'id' }); // {id, blob, type, created}
+          log('created store: images');
+        }
+        if (!db.objectStoreNames.contains('boards')) {
+          db.createObjectStore('boards', { keyPath: 'id' }); // {id, json, updated}
+          log('created store: boards');
+        }
       };
       req.onsuccess = () => { __db = req.result; log('idb opened'); resolve(__db); };
       req.onerror   = () => { warn('idb open error', req.error); reject(req.error); };
@@ -111,7 +117,8 @@
   }
 
   async function idbPut(store, value) {
-    const db  = await idbOpen(); log('idbPut', store, value?.id);
+    const db  = await idbOpen();
+    log('idbPut', store, value?.id);
     return new Promise((resolve, reject) => {
       const tx  = db.transaction(store, 'readwrite');
       tx.oncomplete = () => { log('idbPut complete', store, value?.id); resolve(true); };
@@ -121,7 +128,8 @@
   }
 
   async function idbGet(store, key) {
-    const db  = await idbOpen(); log('idbGet', store, key);
+    const db  = await idbOpen();
+    log('idbGet', store, key);
     return new Promise((resolve, reject) => {
       const tx  = db.transaction(store, 'readonly');
       tx.onerror = () => { warn('idbGet tx error', tx.error); reject(tx.error); };
@@ -132,7 +140,8 @@
   }
 
   async function idbDelete(store, key) {
-    const db  = await idbOpen(); log('idbDelete', store, key);
+    const db  = await idbOpen();
+    log('idbDelete', store, key);
     return new Promise((resolve, reject) => {
       const tx  = db.transaction(store, 'readwrite');
       tx.oncomplete = () => { log('idbDelete complete', store, key); resolve(true); };
@@ -142,40 +151,77 @@
   }
 
   async function idbListAll(store) {
-    const db  = await idbOpen(); log('idbListAll', store);
+    const db  = await idbOpen();
+    log('idbListAll', store);
     return new Promise((resolve, reject) => {
       const tx  = db.transaction(store, 'readonly');
       const st  = tx.objectStore(store);
       const out = [];
-      st.openCursor().onsuccess = (e) => { const cur = e.target.result; if (cur) { out.push(cur.value); cur.continue(); } };
+      st.openCursor().onsuccess = (e) => {
+        const cur = e.target.result;
+        if (cur) { out.push(cur.value); cur.continue(); }
+      };
       tx.oncomplete = () => { log('idbListAll done', store, out.length, 'rows'); resolve(out); };
       tx.onerror    = () => { warn('idbListAll error', tx.error); reject(tx.error); };
     });
   }
 
   async function saveBoardJSON(json) {
-    log('saveBoardJSON start'); await idbPut('boards', { id: 'main', json, updated: Date.now() }); log('saveBoardJSON done');
+    log('saveBoardJSON start');
+    const data = { id: 'main', json, updated: Date.now() };
+    await idbPut('boards', data);
+    log('saveBoardJSON done');
   }
-  async function loadBoardJSON() { log('loadBoardJSON'); const row = await idbGet('boards', 'main'); log('loadBoardJSON result', !!row); return row ? row.json : null; }
+
+  async function loadBoardJSON() {
+    log('loadBoardJSON');
+    const row = await idbGet('boards', 'main');
+    log('loadBoardJSON result', !!row);
+    return row ? row.json : null;
+  }
 
   async function saveImageBlob(blob) {
     const id = (crypto?.randomUUID && crypto.randomUUID()) || ('img-' + Date.now() + '-' + Math.random().toString(36).slice(2));
-    group('saveImageBlob ' + id, () => { log('type', blob?.type, 'size', blob?.size); });
+    group('saveImageBlob ' + id, () => {
+      log('type', blob?.type, 'size', blob?.size);
+    });
     await idbPut('images', { id, blob, type: blob.type || 'application/octet-stream', created: Date.now() });
     return id;
   }
-  async function getImageBlob(id) { log('getImageBlob', id); const row = await idbGet('images', id); log('getImageBlob result', id, !!row); return row ? row.blob : null; }
+
+  async function getImageBlob(id) {
+    log('getImageBlob', id);
+    const row = await idbGet('images', id);
+    log('getImageBlob result', id, !!row);
+    return row ? row.blob : null;
+  }
 
   // -------- スタイル注入 --------
-  const style = document.createElement('style'); style.id = STYLE_ID;
-  const initialVisible = (() => { const v = localStorage.getItem(LS_KEY_VIS); if (v === '0') return false; if (v === '1') return true; return true; })();
+  const style = document.createElement('style');
+  style.id = STYLE_ID;
+
+  const initialVisible = (() => {
+    const v = localStorage.getItem(LS_KEY_VIS);
+    if (v === '0') return false;
+    if (v === '1') return true;
+    return true;
+  })();
   log('initialVisible', initialVisible);
 
-  function nudgePageLayout(){ void document.body.offsetWidth; const fire = () => window.dispatchEvent(new Event('resize')); fire(); setTimeout(fire,120); setTimeout(fire,260); }
+  function nudgePageLayout(){
+    void document.body.offsetWidth;
+    const fire = () => window.dispatchEvent(new Event('resize'));
+    fire(); setTimeout(fire, 120); setTimeout(fire, 260);
+  }
+
   function applyGlobalStyle(visible){
     const mr = visible ? `${SPLIT_RATIO * 100}vw` : '0';
     document.documentElement.setAttribute('data-prx-open', visible ? '1' : '0');
-    const topBarWidthRule = visible ? `.jzS.un8.C9i.TB_ { width: 68% !important; }` : `.jzS.un8.C9i.TB_ { width: auto !important; }`;
+
+    const topBarWidthRule = visible
+        ? `.jzS.un8.C9i.TB_ { width: 68% !important; }`
+        : `.jzS.un8.C9i.TB_ { width: auto !important; }`;
+
     style.textContent = `
       html { overflow-x: hidden !important; }
       body { margin-right: ${mr} !important; transition: margin-right 200ms ease; }
@@ -190,56 +236,105 @@
   const host = document.createElement('div');
   host.id = APP_ID;
   Object.assign(host.style, {
-    position:'fixed', inset:'0 0 0 auto', width:`${SPLIT_RATIO*100}vw`, height:'100vh', background:BG, zIndex:String(Z),
-    display:'flex', flexDirection:'column', pointerEvents:'auto', userSelect:'none', boxSizing:'border-box',
-    borderLeft:'1px solid #000', boxShadow:'-4px 0 8px rgba(0,0,0,0.3)',
-    transform: initialVisible ? 'translateX(0)' : 'translateX(100%)', transition:'transform 200ms ease'
+    position: 'fixed',
+    inset: '0 0 0 auto',
+    width: `${SPLIT_RATIO * 100}vw`,
+    height: '100vh',
+    background: BG,
+    zIndex: String(Z),
+    display: 'flex',
+    flexDirection: 'column',
+    pointerEvents: 'auto',
+    userSelect: 'none',
+    boxSizing: 'border-box',
+    borderLeft: '1px solid #000',
+    boxShadow: '-4px 0 8px rgba(0,0,0,0.3)', // 影を消すならこの行を削除
+    transform: initialVisible ? 'translateX(0)' : 'translateX(100%)',
+    transition: 'transform 200ms ease'
   });
 
+  // 隠すボタン
   const hideBtn = document.createElement('button');
-  hideBtn.type = 'button'; hideBtn.textContent = ' ⟩⟩ ';
+  hideBtn.type = 'button';
+  hideBtn.textContent = ' ⟩⟩ ';
   Object.assign(hideBtn.style, {
-    position:'absolute', top:'8px', right:'8px', zIndex:String(Z+1),
-    border:'1px solid #3a3a3a', background:'#222', color:'#ddd', width:'32px', height:'32px', padding:'0',
-    borderRadius:'999px', display:'inline-flex', alignItems:'center', justifyContent:'center',
-    boxShadow:'0 2px 8px rgba(0,0,0,0.35)', cursor:'pointer'
+    position: 'absolute',
+    top: '8px',
+    right: '8px',
+    zIndex: String(Z + 1),
+    border: '1px solid #3a3a3a',
+    background: '#222',
+    color: '#ddd',
+    width: '32px',
+    height: '32px',
+    padding: '0',
+    borderRadius: '999px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+    cursor: 'pointer'
   });
   hideBtn.onmouseenter = () => hideBtn.style.background = '#2a2a2a';
   hideBtn.onmouseleave = () => hideBtn.style.background = '#222';
 
   const wrap = document.createElement('div');
-  Object.assign(wrap.style, { position:'relative', flex:'1', minHeight:'0', display:'block', contain:'strict' });
+  Object.assign(wrap.style, { position: 'relative', flex: '1', minHeight: '0', display: 'block', contain: 'strict' });
 
+  // 右下トースト
   const toast = (() => {
     let tm, el;
-    return (msg, ms=1400) => {
+    return (msg, ms = 1400) => {
       if (!el) {
         el = document.createElement('div');
         Object.assign(el.style, {
-          position:'absolute', right:'12px', bottom:'12px', background:'rgba(0,0,0,0.85)', color:'#fff',
-          padding:'8px 12px', borderRadius:'8px', font:'12px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif',
-          pointerEvents:'none', opacity:'0', transition:'opacity 200ms', zIndex: Z+1
+          position: 'absolute',
+          right: '12px',
+          bottom: '12px',
+          background: 'rgba(0,0,0,0.85)',
+          color: '#fff',
+          padding: '8px 12px',
+          borderRadius: '8px',
+          font: '12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          pointerEvents: 'none',
+          opacity: '0',
+          transition: 'opacity 200ms',
+          zIndex: Z + 1
         });
         wrap.appendChild(el);
       }
-      el.textContent = msg; el.style.opacity = '1'; clearTimeout(tm); tm = setTimeout(()=>{ el.style.opacity='0'; }, ms);
+      el.textContent = msg;
+      el.style.opacity = '1';
+      clearTimeout(tm);
+      tm = setTimeout(() => { el.style.opacity = '0'; }, ms);
     };
   })();
 
   const elCanvas = document.createElement('canvas');
   elCanvas.id = APP_ID + '-canvas';
-  Object.assign(elCanvas.style, { display:'block', willChange:'transform' });
+  Object.assign(elCanvas.style, { display: 'block', willChange: 'transform' });
 
   wrap.appendChild(elCanvas);
   host.append(hideBtn, wrap);
   (document.body || document.documentElement).appendChild(host);
 
+  // 「開く」ピル
   const opener = document.createElement('button');
-  opener.id = UI_OPEN_BTN_ID; opener.textContent = ' ⟨⟨ ';
+  opener.id = UI_OPEN_BTN_ID;
+  opener.textContent = ' ⟨⟨ ';
   Object.assign(opener.style, {
-    position:'fixed', right:'12px', top:'50%', transform:'translateY(-50%)', zIndex:String(Z),
-    border:'1px solid #3a3a3a', background:'#222', color:'#ddd', padding:'8px 12px',
-    borderRadius:'999px', boxShadow:'0 2px 8px rgba(0,0,0,0.35)', cursor:'pointer',
+    position: 'fixed',
+    right: '12px',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    zIndex: String(Z),
+    border: '1px solid #3a3a3a',
+    background: '#222',
+    color: '#ddd',
+    padding: '8px 12px',
+    borderRadius: '999px',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+    cursor: 'pointer',
     display: initialVisible ? 'none' : 'block'
   });
   opener.onmouseenter = () => opener.style.background = '#2a2a2a';
@@ -265,38 +360,55 @@
     selection: true,
     preserveObjectStacking: true,
     controlsAboveOverlay: true,
-    viewportTransform: [1,0,0,1,0,0]
+    viewportTransform: [1, 0, 0, 1, 0, 0] // パン/ズーム無効
   });
-  window.__pf_canvas__ = canvas; // cleanup で参照
   canvas.enableRetinaScaling = true;
   log('fabric canvas created');
 
   // === rAF 集約レンダ ===
   let __rafId = 0;
-  function safeRender(){ if (__rafId) return; __rafId = requestAnimationFrame(()=>{ __rafId=0; canvas.requestRenderAll(); }); }
+  function safeRender() {
+    if (__rafId) return;
+    __rafId = requestAnimationFrame(() => {
+      __rafId = 0;
+      canvas.requestRenderAll();
+    });
+  }
 
   // === まとめ処理 ===
-  async function withRenderSuspended(fn){
-    const prev = canvas.renderOnAddRemove; canvas.renderOnAddRemove = false;
-    try { await fn(); } finally { canvas.renderOnAddRemove = prev; safeRender(); }
+  async function withRenderSuspended(fn) {
+    const prev = canvas.renderOnAddRemove;
+    canvas.renderOnAddRemove = false;
+    try { await fn(); } finally {
+      canvas.renderOnAddRemove = prev;
+      safeRender();
+    }
   }
 
   // ==== Pointer Capture ====
-  const upper = canvas.upperCanvasEl; upper.style.touchAction = 'none';
-  upper.addEventListener('pointerdown', (ev)=>{ try{ upper.setPointerCapture(ev.pointerId); }catch{} });
-  upper.addEventListener('pointerup',     (ev)=>{ try{ upper.releasePointerCapture(ev.pointerId); }catch{} });
-  upper.addEventListener('pointercancel', (ev)=>{ try{ upper.releasePointerCapture(ev.pointerId); }catch{} });
-  upper.addEventListener('lostpointercapture', ()=>{});
+  const upper = canvas.upperCanvasEl;
+  upper.style.touchAction = 'none';
+  upper.addEventListener('pointerdown', (ev) => { try { upper.setPointerCapture(ev.pointerId); } catch {} });
+  upper.addEventListener('pointerup',     (ev) => { try { upper.releasePointerCapture(ev.pointerId); } catch {} });
+  upper.addEventListener('pointercancel', (ev) => { try { upper.releasePointerCapture(ev.pointerId); } catch {} });
+  upper.addEventListener('lostpointercapture', () => {});
 
   let __pf_dragging__ = false;
-  canvas.on('mouse:down', ()=>{ __pf_dragging__ = true; document.body.style.userSelect='none'; });
-  canvas.on('mouse:up',   ()=>{ __pf_dragging__ = false; document.body.style.userSelect=''; });
+  canvas.on('mouse:down', () => { __pf_dragging__ = true; document.body.style.userSelect = 'none'; });
+  canvas.on('mouse:up',   () => { __pf_dragging__ = false; document.body.style.userSelect = ''; });
 
-  // === スケーリング基準 ===
-  fabric.Object.prototype.centeredScaling = false;
+  // === スケーリング基準（ここを変更） ===
+  fabric.Object.prototype.centeredScaling = false; // 対角ハンドルを基準に拡大縮小
   fabric.Object.prototype.originX = 'center';
   fabric.Object.prototype.originY = 'center';
-  function ensureSelectionScalingMode(){ const sel = canvas.getActiveObject(); if (sel && sel.type==='activeSelection') sel.centeredScaling = false; }
+
+  // 複数選択（activeSelection）でも corner-based にする
+  function ensureSelectionScalingMode() {
+    const sel = canvas.getActiveObject();
+    if (sel && sel.type === 'activeSelection') {
+      sel.centeredScaling = false;
+    }
+  }
   canvas.on('selection:created', ensureSelectionScalingMode);
   canvas.on('selection:updated', ensureSelectionScalingMode);
 
@@ -305,11 +417,16 @@
   const CUSTOM_PROPS = ['selectable','originX','originY','centeredScaling','prxBlobKey','prxSrcUrl','prxId'];
   const UNDO_TYPES = { ADD:'add', REMOVE:'remove', TRANSFORM:'transform', AUTOLIMIT:'autoLimitDelete' };
 
-  function ensurePrxId(obj){ if (!obj.prxId) obj.prxId = (crypto?.randomUUID && crypto.randomUUID()) || ('oid-' + Date.now() + '-' + Math.random().toString(36).slice(2)); return obj.prxId; }
+  function ensurePrxId(obj){
+    if (!obj.prxId) obj.prxId = (crypto?.randomUUID && crypto.randomUUID()) || ('oid-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+    return obj.prxId;
+  }
   function findById(id){ return canvas.getObjects().find(o => o.prxId === id) || null; }
 
   const TF_KEYS = ['left','top','scaleX','scaleY','angle','flipX','flipY','skewX','skewY','opacity'];
-  const pickProps = (obj) => { const out={}; TF_KEYS.forEach(k=> out[k]=obj[k]); return out; };
+  const pickProps = (obj) => {
+    const out = {}; TF_KEYS.forEach(k => out[k] = obj[k]); return out;
+  };
 
   function serializeForRemove(obj){
     const json = obj.toObject(CUSTOM_PROPS);
@@ -319,6 +436,7 @@
 
   async function restoreImageFromJSON(json, index){
     const prxId = json.prxId || ((crypto?.randomUUID && crypto.randomUUID()) || ('oid-' + Math.random().toString(36).slice(2)));
+    // ★ centeredScaling を明示付与しない（グローバル設定を使う）
     const applyCommon = (img) => { img.set(json); img.prxId = prxId; img.setCoords(); };
 
     const blobKey = json.prxBlobKey || null;
@@ -334,14 +452,13 @@
             fabric.Image.fromURL(objUrl, (img)=>{
               if (img){
                 applyCommon(img);
-                img.prxObjUrl = objUrl; // 早期 revoke しない
                 canvas.insertAt(img, Math.max(0,index), true);
                 safeRender();
                 log('restore from blobKey OK', blobKey);
               } else {
                 warn('fabric.Image.fromURL returned null for blobKey', blobKey);
-                try { URL.revokeObjectURL(objUrl); } catch {}
               }
+              setTimeout(()=>{ try{ URL.revokeObjectURL(objUrl); }catch{} }, 2000);
               resolve(img || null);
             }, { crossOrigin: 'anonymous' });
             return;
@@ -370,11 +487,19 @@
   }
 
   const Undo = (() => {
-    const undoStack = []; const redoStack = []; const batches = new Map();
+    const undoStack = [];
+    const redoStack = [];
+    const batches = new Map();
     let transformSnapshot = null;
 
     function clearRedo(){ redoStack.length = 0; }
-    function push(action, {fromReplay=false} = {}){ log('Undo.push', action.type, {fromReplay}); undoStack.push(action); if (undoStack.length > UNDO_LIMIT) undoStack.shift(); if (!fromReplay) clearRedo(); }
+
+    function push(action, {fromReplay=false} = {}){
+      log('Undo.push', action.type, {fromReplay});
+      undoStack.push(action);
+      if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+      if (!fromReplay) clearRedo();
+    }
 
     function beginBatch(type, expectedCount){
       const token = 'batch-' + Date.now() + '-' + Math.random().toString(36).slice(2);
@@ -386,66 +511,115 @@
     }
 
     function finalizeBatch(token){
-      const b = batches.get(token); if (!b || b.done) return;
-      b.done = true; clearTimeout(b.timer); b.timer=null;
-      if (b.items.length) push({ type: UNDO_TYPES.ADD, items: b.items.map(x => ({ id:x.id, json:x.json, index:x.index })) });
-      batches.delete(token); log('Undo.finalizeBatch', token, 'items', (b.items||[]).length);
+      const b = batches.get(token);
+      if (!b || b.done) return;
+      b.done = true;
+      clearTimeout(b.timer);
+      b.timer = null;
+      if (b.items.length){
+        push({ type: UNDO_TYPES.ADD, items: b.items.map(x => ({ id:x.id, json:x.json, index:x.index })) });
+      }
+      batches.delete(token);
+      log('Undo.finalizeBatch', token, 'items', (b.items||[]).length);
     }
 
     function recordAdd(obj, token){
       ensurePrxId(obj);
       const item = { id: obj.prxId, json: obj.toObject(CUSTOM_PROPS), index: canvas.getObjects().indexOf(obj) };
-      if (!token) token = beginBatch(UNDO_TYPES.ADD, 1);
-      const b = batches.get(token); if (!b) return;
-      b.items.push(item); b.remaining = Math.max(0, b.remaining - 1);
-      if (b.remaining === 0 && !b.done) finalizeBatch(token);
+      if (!token){
+        token = beginBatch(UNDO_TYPES.ADD, 1);
+      }
+      const b = batches.get(token);
+      if (!b) return;
+      b.items.push(item);
+      b.remaining = Math.max(0, b.remaining - 1);
+      if (b.remaining === 0 && !b.done){
+        finalizeBatch(token);
+      }
       log('Undo.recordAdd', obj.prxId, 'index', item.index, 'token', token);
     }
 
     async function doUndo(){
-      const act = undoStack.pop(); log('Undo.undo pop', act?.type);
+      const act = undoStack.pop();
+      log('Undo.undo pop', act?.type);
       if (!act) { toast('これ以上戻せません'); return; }
 
       if (act.type === UNDO_TYPES.ADD){
         const removed = [];
-        act.items.forEach(it => { const o = findById(it.id); if (o){ removed.push(serializeForRemove(o)); canvas.remove(o); } });
-        canvas.discardActiveObject(); safeRender(); scheduleSave();
-        redoStack.push({ type: UNDO_TYPES.ADD, items: act.items }); toast('追加を取り消しました'); return;
+        act.items.forEach(it => {
+          const o = findById(it.id);
+          if (o){ removed.push(serializeForRemove(o)); canvas.remove(o); }
+        });
+        canvas.discardActiveObject();
+        safeRender();
+        scheduleSave();
+        redoStack.push({ type: UNDO_TYPES.ADD, items: act.items });
+        toast('追加を取り消しました');
+        return;
       }
 
       if (act.type === UNDO_TYPES.REMOVE || act.type === UNDO_TYPES.AUTOLIMIT){
         await Promise.allSettled(act.objects.map(o => restoreImageFromJSON(o.json, o.index)));
-        safeRender(); scheduleSave(); redoStack.push(act); toast('削除を取り消しました'); return;
+        safeRender();
+        scheduleSave();
+        redoStack.push(act);
+        toast('削除を取り消しました');
+        return;
       }
 
       if (act.type === UNDO_TYPES.TRANSFORM){
-        for (const it of act.before){ const o = findById(it.id); if (o){ Object.assign(o, it.props); o.setCoords(); } }
-        safeRender(); scheduleSave(); redoStack.push(act); toast('編集を取り消しました'); return;
+        for (const it of act.before){
+          const o = findById(it.id);
+          if (o){ Object.assign(o, it.props); o.setCoords(); }
+        }
+        safeRender();
+        scheduleSave();
+        redoStack.push(act);
+        toast('編集を取り消しました');
+        return;
       }
     }
 
     async function doRedo(){
-      const act = redoStack.pop(); log('Undo.redo pop', act?.type);
+      const act = redoStack.pop();
+      log('Undo.redo pop', act?.type);
       if (!act) { toast('これ以上やり直せません'); return; }
 
       if (act.type === UNDO_TYPES.ADD){
         await Promise.allSettled(act.items.map(it => restoreImageFromJSON(it.json, it.index)));
-        safeRender(); scheduleSave(); push({ type: UNDO_TYPES.ADD, items: act.items }, { fromReplay:true }); toast('追加をやり直しました'); return;
+        safeRender();
+        scheduleSave();
+        push({ type: UNDO_TYPES.ADD, items: act.items }, { fromReplay:true });
+        toast('追加をやり直しました');
+        return;
       }
 
       if (act.type === UNDO_TYPES.REMOVE || act.type === UNDO_TYPES.AUTOLIMIT){
         const removed = [];
         for (const oinfo of act.objects){
-          const id = oinfo.json?.prxId; if (!id) continue;
-          const o = findById(id); if (o){ removed.push(serializeForRemove(o)); canvas.remove(o); }
+          const id = oinfo.json?.prxId;
+          if (!id) continue;
+          const o = findById(id);
+          if (o){ removed.push(serializeForRemove(o)); canvas.remove(o); }
         }
-        canvas.discardActiveObject(); safeRender(); scheduleSave();
-        push({ type: act.type, objects: removed }, { fromReplay:true }); toast('削除をやり直しました'); return;
+        canvas.discardActiveObject();
+        safeRender();
+        scheduleSave();
+        push({ type: act.type, objects: removed }, { fromReplay:true });
+        toast('削除をやり直しました');
+        return;
       }
 
       if (act.type === UNDO_TYPES.TRANSFORM){
-        for (const it of act.after){ const o = findById(it.id); if (o){ Object.assign(o, it.props); o.setCoords(); } }
-        safeRender(); scheduleSave(); push(act, { fromReplay:true }); toast('編集をやり直しました'); return;
+        for (const it of act.after){
+          const o = findById(it.id);
+          if (o){ Object.assign(o, it.props); o.setCoords(); }
+        }
+        safeRender();
+        scheduleSave();
+        push(act, { fromReplay:true });
+        toast('編集をやり直しました');
+        return;
       }
     }
 
@@ -457,16 +631,23 @@
     }
     function onPointerUp(){
       fabric.Object.prototype.objectCaching = true;
+
       if (!transformSnapshot) return;
-      const before = transformSnapshot.items; const after = [];
+      const before = transformSnapshot.items;
+      const after = [];
       for (const b of before){
-        const o = findById(b.id); if (!o) continue;
+        const o = findById(b.id);
+        if (!o) continue;
         const now = pickProps(o);
         const diff = TF_KEYS.some(k => (now[k] ?? null) !== (b.props[k] ?? null));
         if (diff) after.push({ id: b.id, props: now });
       }
       transformSnapshot = null;
-      if (after.length){ const action = { type: UNDO_TYPES.TRANSFORM, before, after }; push(action); safeRender(); }
+      if (after.length){
+        const action = { type: UNDO_TYPES.TRANSFORM, before, after };
+        push(action);
+        safeRender();
+      }
     }
 
     return {
@@ -481,26 +662,83 @@
 
   // === Shift+Alt フリップ ===
   const FlipGesture = (() => {
-    const THRESH = 16; let active=false, started=false, obj=null; let startX=0, startY=0; let prevLockX=false, prevLockY=false;
-    function canStart(e){ if (!e.shiftKey || !e.altKey) return false; const sel = canvas.getActiveObjects()||[]; if (sel.length!==1) return false; const o = sel[0]; if (!o || o.type!=='image') return false; return true; }
-    function onMouseDown(opt){
-      const e = opt.e || {}; if (!canStart(e)) { active=false; obj=null; return; }
-      const sel = canvas.getActiveObjects(); obj = sel[0];
-      prevLockX = !!obj.lockMovementX; prevLockY = !!obj.lockMovementY; obj.lockMovementX = true; obj.lockMovementY = true;
-      startX = e.clientX; startY = e.clientY; active=true; started=false;
+    const THRESH = 16;
+    let active = false;
+    let started = false;
+    let obj = null;
+    let startX = 0, startY = 0;
+    let prevLockX = false, prevLockY = false;
+
+    function canStart(e){
+      if (!e.shiftKey || !e.altKey) return false;
+      const sel = canvas.getActiveObjects() || [];
+      if (sel.length !== 1) return false;
+      const o = sel[0];
+      if (!o || o.type !== 'image') return false;
+      return true;
     }
+
+    function onMouseDown(opt){
+      const e = opt.e || {};
+      if (!canStart(e)) { active = false; obj = null; return; }
+
+      const sel = canvas.getActiveObjects();
+      obj = sel[0];
+      prevLockX = !!obj.lockMovementX;
+      prevLockY = !!obj.lockMovementY;
+      obj.lockMovementX = true;
+      obj.lockMovementY = true;
+
+      startX = e.clientX;
+      startY = e.clientY;
+      active = true;
+      started = false;
+    }
+
     function onMouseMove(opt){
-      if (!active || !obj) return; const e = opt.e || {}; if (e.preventDefault) e.preventDefault();
-      const dx = (e.clientX ?? startX) - startX; const dy = (e.clientY ?? startY) - startY;
+      if (!active || !obj) return;
+      const e = opt.e || {};
+      if (e.preventDefault) e.preventDefault();
+
+      const dx = (e.clientX ?? startX) - startX;
+      const dy = (e.clientY ?? startY) - startY;
+
       if (!started){
         if (Math.abs(dx) < THRESH && Math.abs(dy) < THRESH) return;
         started = true;
-        if (Math.abs(dy) >= Math.abs(dx)) { obj.set('flipY', !obj.flipY); obj.setCoords(); safeRender(); toast('上下反転'); }
-        else { obj.set('flipX', !obj.flipX); obj.setCoords(); safeRender(); toast('左右反転'); }
+
+        if (Math.abs(dy) >= Math.abs(dx)) {
+          obj.set('flipY', !obj.flipY);
+          obj.setCoords();
+          safeRender();
+          toast('上下反転');
+        } else {
+          obj.set('flipX', !obj.flipX);
+          obj.setCoords();
+          safeRender();
+          toast('左右反転');
+        }
       }
     }
-    function onMouseUp(){ if (!active) return; if (obj){ obj.lockMovementX = prevLockX; obj.lockMovementY = prevLockY; } active=false; obj=null; }
-    function onObjectMoving(opt){ if (active && opt?.target){ opt.target.left = opt.target.left; opt.target.top = opt.target.top; if (opt.e?.preventDefault) opt.e.preventDefault(); } }
+
+    function onMouseUp(){
+      if (!active) return;
+      if (obj){
+        obj.lockMovementX = prevLockX;
+        obj.lockMovementY = prevLockY;
+      }
+      active = false;
+      obj = null;
+    }
+
+    function onObjectMoving(opt){
+      if (active && opt?.target){
+        opt.target.left = opt.target.left;
+        opt.target.top  = opt.target.top;
+        if (opt.e?.preventDefault) opt.e.preventDefault();
+      }
+    }
+
     return { onMouseDown, onMouseMove, onMouseUp, onObjectMoving };
   })();
 
@@ -510,7 +748,7 @@
   // キャンバスのリサイズ
   const resize = () => {
     const rect = wrap.getBoundingClientRect();
-    canvas.setDimensions({ width: rect.width, height: rect.height }, { backstoreOnly:false });
+    canvas.setDimensions({ width: rect.width, height: rect.height }, { backstoreOnly: false });
     log('canvas resized', rect.width, rect.height, 'images=', canvas.getObjects('image').length);
     safeRender();
   };
@@ -519,381 +757,442 @@
 
   // === 画像上限制御 ===
   const getImageCount = () => canvas.getObjects('image').length;
-  function ensureCanAdd(need=1){ const left = MAX_IMAGES - getImageCount(); if (left < need) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return false; } return true; }
-  function enforceImageLimitAfterLoad(){
-    const imgs = canvas.getObjects('image'); if (imgs.length <= MAX_IMAGES) return;
-    const excess = imgs.length - MAX_IMAGES; const removed = [];
-    for (let i=0; i<excess; i++) { const list = canvas.getObjects('image'); if (list[i]) { ensurePrxId(list[i]); removed.push(serializeForRemove(list[i])); canvas.remove(list[i]); } }
-    if (removed.length){ Undo.pushAutoLimit(removed); toast(`画像は最大 ${MAX_IMAGES} 枚までに制限しました`); safeRender(); scheduleSave(); log('enforceImageLimitAfterLoad removed', removed.length); }
+  function ensureCanAdd(need = 1) {
+    const left = MAX_IMAGES - getImageCount();
+    if (left < need) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return false; }
+    return true;
+  }
+  function enforceImageLimitAfterLoad() {
+    const imgs = canvas.getObjects('image');
+    if (imgs.length <= MAX_IMAGES) return;
+    const excess = imgs.length - MAX_IMAGES;
+
+    const removed = [];
+    for (let i = 0; i < excess; i++) {
+      const list = canvas.getObjects('image');
+      if (list[i]) {
+        ensurePrxId(list[i]);
+        removed.push(serializeForRemove(list[i]));
+        canvas.remove(list[i]);
+      }
+    }
+    if (removed.length){
+      Undo.pushAutoLimit(removed);
+      toast(`画像は最大 ${MAX_IMAGES} 枚までに制限しました`);
+      safeRender();
+      scheduleSave();
+      log('enforceImageLimitAfterLoad removed', removed.length);
+    }
   }
 
   // -------- 画像追加ユーティリティ --------
-  function fitImageInside(img, cw, ch, maxRatio=1.0){ const w = img.width||1, h = img.height||1; const scale = Math.min((cw*maxRatio)/w, (ch*maxRatio)/h, 1); img.scale(scale); }
-  function objURLFromBlob(blob){ try { return URL.createObjectURL(blob); } catch { return null; } }
+  function fitImageInside(img, cw, ch, maxRatio = 1.0) {
+    const w = img.width || 1;
+    const h = img.height || 1;
+    const scale = Math.min((cw * maxRatio) / w, (ch * maxRatio) / h, 1);
+    img.scale(scale);
+  }
 
-  async function addImageFromUrl(url, batchToken){
-    if (!url) return; if (!ensureCanAdd(1)) return;
+  function objURLFromBlob(blob) { try { return URL.createObjectURL(blob); } catch { return null; } }
+
+  async function addImageFromUrl(url, batchToken) {
+    if (!url) return;
+    if (!ensureCanAdd(1)) return;
     const clean = url.trim();
+
     let blob = null;
-    try { log('fetch image url', clean); const res = await fetch(clean, { mode:'cors', credentials:'omit' }); if (!res.ok) throw new Error('fetch not ok'); blob = await res.blob(); log('fetch ok, blob', blob?.type, blob?.size); }
-    catch (e) { blob = null; warn('fetch failed, fallback to direct url', e); }
+    try {
+      log('fetch image url', clean);
+      const res = await fetch(clean, { mode: 'cors', credentials: 'omit' });
+      if (!res.ok) throw new Error('fetch not ok');
+      blob = await res.blob();
+      log('fetch ok, blob', blob?.type, blob?.size);
+    } catch (e) { blob = null; warn('fetch failed, fallback to direct url', e); }
 
     if (blob) {
-      const key = await saveImageBlob(blob); const urlObj = objURLFromBlob(blob);
+      const key = await saveImageBlob(blob);
+      const urlObj = objURLFromBlob(blob);
       fabric.Image.fromURL(urlObj, (img) => {
-        if (!img) { warn('fabric from blob null'); try{ URL.revokeObjectURL(urlObj); }catch{}; return; }
-        img.set({ crossOrigin:'anonymous' }); fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
+        if (!img) { if (urlObj) setTimeout(() => URL.revokeObjectURL(urlObj), 2000); warn('fabric from blob null'); return; }
+        img.set({ crossOrigin: 'anonymous' });
+        fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
         img.set({ originX:'center', originY:'center', left:canvas.getWidth()/2, top:canvas.getHeight()/2, selectable:true, prxBlobKey:key, prxSrcUrl:null });
-        img.prxObjUrl = urlObj; // 早期 revoke しない
-        ensurePrxId(img); canvas.add(img); canvas.setActiveObject(img); Undo.recordAdd(img, batchToken); safeRender(); scheduleSave();
+        ensurePrxId(img);
+        canvas.add(img);
+        canvas.setActiveObject(img);
+        Undo.recordAdd(img, batchToken);
+        safeRender();
+        scheduleSave();
         log('added image from BLOB key', key, 'objects=', getImageCount());
-      }, { crossOrigin:'anonymous' });
+        setTimeout(() => { try { URL.revokeObjectURL(urlObj); } catch {} }, 2000);
+      }, { crossOrigin: 'anonymous' });
       return;
     }
 
     fabric.Image.fromURL(clean, (img) => {
       if (!img) { warn('fabric from URL null'); return; }
-      img.set({ crossOrigin:'anonymous' }); fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
+      img.set({ crossOrigin: 'anonymous' });
+      fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
       img.set({ originX:'center', originY:'center', left:canvas.getWidth()/2, top:canvas.getHeight()/2, selectable:true, prxBlobKey:null, prxSrcUrl:clean });
-      ensurePrxId(img); canvas.add(img); canvas.setActiveObject(img); Undo.recordAdd(img, batchToken); safeRender(); scheduleSave();
+      ensurePrxId(img);
+      canvas.add(img);
+      canvas.setActiveObject(img);
+      Undo.recordAdd(img, batchToken);
+      safeRender();
+      scheduleSave();
       log('added image from URL', clean, 'objects=', getImageCount());
-    }, { crossOrigin:'anonymous' });
+    }, { crossOrigin: 'anonymous' });
   }
 
-  function addImageFromFile(file, batchToken){
-    if (!file || !file.type?.startsWith('image/')) return; if (!ensureCanAdd(1)) return;
-    log('addImageFromFile', file.name, file.type, file.size); addImageFromBlob(file, batchToken);
+  function addImageFromFile(file, batchToken) {
+    if (!file || !file.type?.startsWith('image/')) return;
+    if (!ensureCanAdd(1)) return;
+    log('addImageFromFile', file.name, file.type, file.size);
+    addImageFromBlob(file, batchToken);
   }
 
-  async function addImageFromBlob(blob, batchToken){
-    if (!blob || !blob.type?.startsWith('image/')) return; if (!ensureCanAdd(1)) return;
-    const key = await saveImageBlob(blob); const url = objURLFromBlob(blob);
+  async function addImageFromBlob(blob, batchToken) {
+    if (!blob || !blob.type?.startsWith('image/')) return;
+    if (!ensureCanAdd(1)) return;
+
+    const key = await saveImageBlob(blob);
+    const url = objURLFromBlob(blob);
     fabric.Image.fromURL(url, (img) => {
-      if (!img) { warn('fabric from blob null'); try{ URL.revokeObjectURL(url); }catch{}; return; }
+      if (!img) { if (url) setTimeout(() => URL.revokeObjectURL(url), 2000); warn('fabric from blob null'); return; }
       fitImageInside(img, canvas.getWidth(), canvas.getHeight(), 0.9);
       img.set({ originX:'center', originY:'center', left:canvas.getWidth()/2, top:canvas.getHeight()/2, selectable:true, prxBlobKey:key, prxSrcUrl:null });
-      img.prxObjUrl = url; // 早期 revoke しない
-      ensurePrxId(img); canvas.add(img); canvas.setActiveObject(img); Undo.recordAdd(img, batchToken); safeRender(); scheduleSave();
+      ensurePrxId(img);
+      canvas.add(img);
+      canvas.setActiveObject(img);
+      Undo.recordAdd(img, batchToken);
+      safeRender();
+      scheduleSave();
       log('added image from FILE blob key', key, 'objects=', getImageCount());
-    }, { crossOrigin:'anonymous' });
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 2000);
+    }, { crossOrigin: 'anonymous' });
   }
 
   // -------- D&D --------
-  const preventDefaults = (e)=>{ e.preventDefault(); e.stopPropagation(); };
-  ['dragenter','dragover','dragleave','drop'].forEach((ev)=>{ host.addEventListener(ev, preventDefaults, false); wrap.addEventListener(ev, preventDefaults, false); });
-  wrap.addEventListener('drop', (e) => {
-    const dt = e.dataTransfer; if (!dt) return;
-    if (dt.files && dt.files.length){
-      let capacity = MAX_IMAGES - getImageCount(); if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
-      const files = Array.from(dt.files).slice(0, capacity); const token = Undo.beginBatch('add', files.length);
-      withRenderSuspended(async () => { for (const f of files) addImageFromFile(f, token); }); return;
-    }
-    const uriList = dt.getData('text/uri-list'); const plain = dt.getData('text/plain'); const text = (uriList || plain || '').trim();
-    if (text && isProbablyUrl(text)) { if (!ensureCanAdd(1)) return; addImageFromUrl(text, null); }
+  const preventDefaults = (e) => { e.preventDefault(); e.stopPropagation(); };
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((ev) => {
+    host.addEventListener(ev, preventDefaults, false);
+    wrap.addEventListener(ev, preventDefaults, false);
   });
-  function isProbablyUrl(s){ try{ new URL(s); return true; }catch{ return false; } }
+
+  wrap.addEventListener('drop', (e) => {
+    const dt = e.dataTransfer;
+    if (!dt) return;
+
+    if (dt.files && dt.files.length) {
+      let capacity = MAX_IMAGES - getImageCount();
+      if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
+      const files = Array.from(dt.files).slice(0, capacity);
+      const token = Undo.beginBatch('add', files.length);
+      withRenderSuspended(async () => {
+        for (const f of files) addImageFromFile(f, token);
+      });
+      return;
+    }
+
+    const uriList = dt.getData('text/uri-list');
+    const plain   = dt.getData('text/plain');
+    const text    = (uriList || plain || '').trim();
+    if (text && isProbablyUrl(text)) {
+      if (!ensureCanAdd(1)) return;
+      addImageFromUrl(text, null);
+    }
+  });
+
+  function isProbablyUrl(s) { try { new URL(s); return true; } catch { return false; } }
 
   // -------- クリップボード貼り付け --------
   window.addEventListener('paste', async (e) => {
-    const target = e.target; if (target && (target.tagName==='INPUT' || target.tagName==='TEXTAREA' || target.isContentEditable)) return;
-    const cd = e.clipboardData; if (!cd) return;
+    const target = e.target;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
 
-    const items = Array.from(cd.items||[]).filter(it => it.kind==='file' && it.type?.startsWith('image/'));
-    if (items.length){
-      let capacity = MAX_IMAGES - getImageCount(); if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
-      const take = items.slice(0, capacity); const token = Undo.beginBatch('add', take.length);
-      withRenderSuspended(async () => { for (const it of take) { const blob = it.getAsFile(); if (blob) addImageFromBlob(blob, token); } });
+    const cd = e.clipboardData;
+    if (!cd) return;
+
+    const items = Array.from(cd.items || []).filter(it => it.kind === 'file' && it.type?.startsWith('image/'));
+    if (items.length) {
+      let capacity = MAX_IMAGES - getImageCount();
+      if (capacity <= 0) { toast(`画像は最大 ${MAX_IMAGES} 枚までです`); return; }
+      const take = items.slice(0, capacity);
+      const token = Undo.beginBatch('add', take.length);
+      withRenderSuspended(async () => {
+        for (const it of take) {
+          const blob = it.getAsFile();
+          if (blob) addImageFromBlob(blob, token);
+        }
+      });
       return;
     }
 
     const text = cd.getData('text')?.trim();
-    if (text && isProbablyUrl(text)) { if (!ensureCanAdd(1)) return; addImageFromUrl(text, null); }
+    if (text && isProbablyUrl(text)) {
+      if (!ensureCanAdd(1)) return;
+      addImageFromUrl(text, null);
+    }
   });
-
-  // ==== Copy 調査ユーティリティ ====
-  async function __pf_logClipboardPerms() {
-    const out = {};
-    try {
-      if (navigator.permissions?.query) {
-        try { out.write = (await navigator.permissions.query({ name: 'clipboard-write' }))?.state; } catch {}
-        try { out.read  = (await navigator.permissions.query({ name: 'clipboard-read'  }))?.state; } catch {}
-      } else out.note = 'navigator.permissions not available';
-    } catch (e) { out.permsError = String(e?.message || e); }
-    return out;
-  }
-  function __pf_tryTaintChecks(canvasEl){
-    const info = { tainted:false, tests:{} };
-    try { const ctx = canvasEl.getContext('2d', { willReadFrequently:true }); ctx.getImageData(0,0,1,1); info.tests.getImageData = 'ok'; }
-    catch(e){ info.tests.getImageData = `ERR:${e?.name||''}:${e?.message||e}`; info.tainted = true; }
-    try { canvasEl.toDataURL('image/png'); info.tests.toDataURL = 'ok'; }
-    catch(e){ info.tests.toDataURL = `ERR:${e?.name||''}:${e?.message||e}`; info.tainted = true; }
-    return info;
-  }
-  function __pf_imgElemInfo(fabricImage){
-    const el = fabricImage?._element || fabricImage?._originalElement || null;
-    if (!el) return { note:'no _element' };
-    return { tagName: el.tagName, crossOrigin: el.crossOrigin ?? null, src: el.src ?? null, currentSrc: el.currentSrc ?? null, naturalWidth: el.naturalWidth ?? null, naturalHeight: el.naturalHeight ?? null };
-  }
 
   // ====== 画像コピー（Ctrl/⌘+C） ======
   let __copyBusy = false;
   async function copyActiveImageToClipboard() {
-    const sel = canvas.getActiveObjects() || []; if (sel.length !== 1) return false;
-    const obj = sel[0]; if (obj?.type !== 'image') return false;
-    if (__copyBusy) return false; __copyBusy = true;
+    const sel = canvas.getActiveObjects() || [];
+    if (sel.length !== 1) return false;
+    const obj = sel[0];
+    if (obj?.type !== 'image') return false;
+    if (__copyBusy) return false;
+    __copyBusy = true;
 
-    const gid = `[PureFab/CopyDiag] ${new Date().toISOString()}`; console.groupCollapsed(gid);
     try {
-      const perms = await __pf_logClipboardPerms(); const imgInfo = __pf_imgElemInfo(obj);
-      const meta = { prxId: obj.prxId||null, prxBlobKey: obj.prxBlobKey||null, prxSrcUrl: obj.prxSrcUrl||null,
-        selectable: obj.selectable, angle: obj.angle, scaleX: obj.scaleX, scaleY: obj.scaleY,
-        left: obj.left, top: obj.top, docHasFocus: document.hasFocus(), visibilityState: document.visibilityState, perms };
-      console.log('copy start meta:', meta); console.log('image element info:', imgInfo);
-
-      const result = await new Promise((resolve, reject) => {
-        obj.clone(async (cloned) => {
+      return await new Promise((resolve, reject) => {
+        obj.clone((cloned) => {
           try {
-            // ---- フォールバック（B）: clone() が null の場合 ----
-            if (!cloned) {
-              console.warn('clone returned null; fallback to source-based reconstruction');
-              let srcFromBlob = null;
-              try {
-                if (obj.prxBlobKey) {
-                  const b = await getImageBlob(obj.prxBlobKey);
-                  if (b) srcFromBlob = URL.createObjectURL(b);
-                }
-              } catch {}
-              const src = srcFromBlob || obj.prxSrcUrl || (obj._element?.src ?? null);
-              if (!src) throw new Error('no source for fallback rendering');
-
-              fabric.Image.fromURL(src, (tmp) => {
-                if (!tmp) throw new Error('fallback fromURL returned null');
-
-                // 元の見た目を移植
-                tmp.set({
-                  originX:'center', originY:'center',
-                  angle: obj.angle, flipX: obj.flipX, flipY: obj.flipY,
-                  skewX: obj.skewX, skewY: obj.skewY, opacity: obj.opacity
-                });
-
-                const multiplier = 2;
-                const bbox = obj.getBoundingRect(true, true);
-                const w = Math.max(1, Math.round(bbox.width  * multiplier));
-                const h = Math.max(1, Math.round(bbox.height * multiplier));
-                const sc = new fabric.StaticCanvas(null, { width:w, height:h });
-
-                // 元と同じ見た目スケール
-                const scaleX = (obj.getScaledWidth()  || 1) / (tmp.width  || 1);
-                const scaleY = (obj.getScaledHeight() || 1) / (tmp.height || 1);
-                tmp.left = w/2; tmp.top = h/2;
-                tmp.scaleX = scaleX * multiplier; tmp.scaleY = scaleY * multiplier;
-
-                sc.add(tmp); sc.renderAll();
-
-                const taintInfo = __pf_tryTaintChecks(sc.lowerCanvasEl);
-                console.log('taint check (fallback):', taintInfo);
-
-                sc.lowerCanvasEl.toBlob(async (blob) => {
-                  try {
-                    if (!blob) throw new Error('toBlob returned null/undefined');
-                    await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
-                    console.log('clipboard.write ok (fallback)');
-                    resolve(true);
-                  } catch (writeErr) {
-                    console.warn('clipboard.write failed (fallback):', writeErr?.name, writeErr);
-                    reject(writeErr);
-                  } finally {
-                    try { if (srcFromBlob) URL.revokeObjectURL(srcFromBlob); } catch {}
-                    sc.dispose();
-                  }
-                }, 'image/png');
-              }, { crossOrigin:'anonymous' });
-
-              return; // フォールバック経路に渡したので抜ける
-            }
-
-            // ---- 通常経路 ----
             const multiplier = 2;
             const bbox = cloned.getBoundingRect(true, true);
             const w = Math.max(1, Math.round(bbox.width  * multiplier));
             const h = Math.max(1, Math.round(bbox.height * multiplier));
-            console.log('clone ok; bbox:', bbox, 'render size:', {w, h});
+            const sc = new fabric.StaticCanvas(null, { width: w, height: h });
 
-            const sc = new fabric.StaticCanvas(null, { width:w, height:h });
-            cloned.set({ originX:'center', originY:'center', left:w/2, top:h/2, selectable:false });
+            cloned.set({ originX: 'center', originY: 'center', left: w / 2, top:  h / 2, selectable: false });
             cloned.scaleX = (cloned.scaleX || 1) * multiplier;
             cloned.scaleY = (cloned.scaleY || 1) * multiplier;
 
-            sc.add(cloned); sc.renderAll();
-
-            const taintInfo = __pf_tryTaintChecks(sc.lowerCanvasEl);
-            console.log('taint check:', taintInfo);
+            sc.add(cloned);
+            sc.renderAll();
 
             sc.lowerCanvasEl.toBlob(async (blob) => {
               try {
-                console.log('toBlob returned:', !!blob, blob ? `size=${blob.size}, type=${blob.type}` : '');
-                if (!blob) throw new Error('toBlob returned null/undefined');
+                if (!blob) throw new Error('blob is null');
                 await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
-                console.log('clipboard.write ok');
                 resolve(true);
-              } catch (writeErr) {
-                console.warn('clipboard.write failed:', writeErr?.name, writeErr);
-                reject(writeErr);
-              } finally { sc.dispose(); }
+              } catch (err) {
+                reject(err);
+              } finally {
+                sc.dispose();
+              }
             }, 'image/png');
-
           } catch (e) { reject(e); }
         });
       });
-
-      console.log('copy result:', result);
-      return result;
-    } catch (err) {
-      console.warn('copyActiveImageToClipboard error:', err?.name, err);
-      const msg = String(err?.name || err?.message || err);
-      if (/SecurityError/i.test(msg)) { toast('コピー失敗: 画像の出所が CORS 非対応のためキャンバスが保護されています', 2200); }
-      else if (/NotAllowedError|NotAllowed/i.test(msg)) { toast('コピー失敗: クリップボード権限が許可されていない可能性', 2000); }
-      throw err;
-    } finally { console.groupEnd(gid); __copyBusy = false; }
+    } finally {
+      __copyBusy = false;
+    }
   }
 
   // -------- キーボードショートカット --------
   window.addEventListener('keydown', async (e) => {
-    if (document.activeElement && (document.activeElement.tagName==='INPUT' || document.activeElement.tagName==='TEXTAREA' || document.activeElement.isContentEditable)) return;
+    if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.isContentEditable)) return;
 
-    // デバッグ: キーイベントの詳細ログ
-    console.groupCollapsed('[PureFab/Keydown]', { key:e.key, code:e.code, ctrl:!!e.ctrlKey, meta:!!e.metaKey, shift:!!e.shiftKey, alt:!!e.altKey, isTrusted:!!e.isTrusted, hasFocus:document.hasFocus(), visibility:document.visibilityState });
-    try { const sel = canvas.getActiveObjects() || []; console.log('active objects:', sel.map(o => ({ type:o.type, prxId:o.prxId, blobKey:o.prxBlobKey, srcUrl:o.prxSrcUrl }))); }
-    finally { console.groupEnd('[PureFab/Keydown]'); }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+      e.preventDefault();
+      await Undo.undo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && (e.key === 'z' || e.key === 'Z')) || e.key === 'y' || e.key === 'Y')) {
+      e.preventDefault();
+      await Undo.redo();
+      return;
+    }
 
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key==='z' || e.key==='Z')) { e.preventDefault(); await Undo.undo(); return; }
-    if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && (e.key==='z' || e.key==='Z')) || e.key==='y' || e.key==='Y')) { e.preventDefault(); await Undo.redo(); return; }
-
-    if (e.key==='Delete' || e.key==='Backspace') {
+    if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = canvas.getActiveObjects();
       if (active && active.length) {
         const removed = [];
-        active.forEach(obj => { ensurePrxId(obj); removed.push(serializeForRemove(obj)); canvas.remove(obj); });
-        canvas.discardActiveObject(); if (removed.length) Undo.pushRemove(removed);
-        safeRender(); scheduleSave(); e.preventDefault(); log('deleted objects', removed.length);
+        active.forEach(obj => {
+          ensurePrxId(obj);
+          removed.push(serializeForRemove(obj));
+          canvas.remove(obj);
+        });
+        canvas.discardActiveObject();
+        if (removed.length) Undo.pushRemove(removed);
+        safeRender();
+        scheduleSave();
+        e.preventDefault();
+        log('deleted objects', removed.length);
       }
       return;
     }
 
-    if ((e.ctrlKey || e.metaKey) && (e.key==='c' || e.key==='C')) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
       const sel = canvas.getActiveObjects() || [];
-      if (sel.length > 1) { e.preventDefault(); toast('複数選択中はコピーできません（1枚だけ選択してください）'); return; }
+      if (sel.length > 1) {
+        e.preventDefault();
+        toast('複数選択中はコピーできません（1枚だけ選択してください）');
+        return;
+      }
       if (sel.length === 1 && sel[0]?.type === 'image') {
         e.preventDefault();
-        try { await copyActiveImageToClipboard(); toast('画像をクリップボードへコピーしました'); }
-        catch (err) { console.warn('clipboard write failed:', err); toast('コピーに失敗しました（ブラウザ設定や権限を確認してください）', 2000); }
+        try {
+          await copyActiveImageToClipboard();
+          toast('画像をクリップボードへコピーしました');
+        } catch (err) {
+          console.warn('clipboard write failed:', err);
+          toast('コピーに失敗しました（ブラウザ設定や権限を確認してください）', 2000);
+        }
       }
     }
   });
 
-  // === 画像クリックで最前面へ ===
+  // === 画像クリックで最前面へ（ここを追加） ===
   function bringClickedImageToFront(opt){
-    const t = opt?.target; const e = opt?.e || {};
-    if (!t || t.type!=='image' || e.shiftKey || e.ctrlKey || e.metaKey) return;
-    try { t.bringToFront(); safeRender(); scheduleSave(); log('bringToFront on click:', t.prxId || '(no id)'); }
-    catch (err) { warn('bringToFront failed', err); }
+    const t = opt?.target;
+    const e = opt?.e || {};
+    // 修飾キー（Shift/Ctrl/Meta）付きの操作時はスキップ（範囲選択や複数選択の邪魔をしない）
+    if (!t || t.type !== 'image' || e.shiftKey || e.ctrlKey || e.metaKey) return;
+    try {
+      t.bringToFront();
+      safeRender();
+      scheduleSave(); // レイヤ順を保存
+      log('bringToFront on click:', t.prxId || '(no id)');
+    } catch (err) {
+      warn('bringToFront failed', err);
+    }
   }
 
   // 変形のUndo収集 + フリップジェスチャ + 最前面化
-  canvas.on('mouse:down', (opt) => { bringClickedImageToFront(opt); Undo.onPointerDown(opt); FlipGesture.onMouseDown(opt); });
+  canvas.on('mouse:down', (opt) => {
+    bringClickedImageToFront(opt);
+    Undo.onPointerDown(opt);
+    FlipGesture.onMouseDown(opt);
+  });
   canvas.on('mouse:move', (opt) => { FlipGesture.onMouseMove(opt); });
   canvas.on('mouse:up',   (opt) => { FlipGesture.onMouseUp(opt); Undo.onPointerUp(opt); });
-
-  // 画像削除時に blob: を revoke（A）
-  function revokeIfBlob(u){ try{ if (typeof u==='string' && u.startsWith('blob:')) URL.revokeObjectURL(u); }catch{} }
-  canvas.on('object:removed', (opt) => {
-    const o = opt?.target;
-    if (o && o.type === 'image') {
-      try {
-        const el = o._element || o._originalElement;
-        const src = (el && el.src) || o.prxObjUrl;
-        revokeIfBlob(src);
-      } catch {}
-    }
-  });
+  canvas.on('object:moving', (opt) => { FlipGesture.onObjectMoving(opt); });
 
   // -------- 永続化（IndexedDB） + GC --------
   let saveTimer = null;
-  function scheduleSave(){
+  function scheduleSave() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       log('scheduleSave fired');
-      if ('requestIdleCallback' in window) requestIdleCallback(async () => { await saveNow(); scheduleGc(); }, { timeout:1500 });
-      else saveNow().then(scheduleGc);
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(async () => { await saveNow(); scheduleGc(); }, { timeout: 1500 });
+      } else {
+        saveNow().then(scheduleGc);
+      }
     }, 400);
   }
 
-  // ==== 保存時に blob: をスクラブ ====
-  async function saveNow(){
+  // ==== 修正点1: 保存時に blob: をスクラブ ====
+  async function saveNow() {
     try {
+      // src を含めた JSON を取得して blob: を除去
       const json = canvas.toJSON(['selectable','originX','originY','centeredScaling','prxBlobKey','prxSrcUrl','prxId','src']);
       if (Array.isArray(json.objects)) {
-        for (const o of json.objects) { if (o.type==='image' && typeof o.src==='string' && o.src.startsWith('blob:')) o.src = null; }
+        for (const o of json.objects) {
+          if (o.type === 'image' && typeof o.src === 'string' && o.src.startsWith('blob:')) {
+            o.src = null; // 復元は prxBlobKey / prxSrcUrl 経由で行う
+          }
+        }
       }
       log('saveNow start; objects=', canvas.getObjects().length, 'images=', getImageCount());
-      await saveBoardJSON({ v:3, json }); log('saveNow ok');
-    } catch (e) { warn('save board failed:', e); toast('保存に失敗しました', 1200); }
+      await saveBoardJSON({ v: 3, json }); // v:3 に更新
+      log('saveNow ok');
+    } catch (e) {
+      warn('save board failed:', e);
+      toast('保存に失敗しました', 1200);
+    }
   }
 
-  // ==== 自前復元 ====
-  async function loadBoard(){
-    log('loadBoard start'); const saved = await loadBoardJSON(); if (!saved?.json) { log('no saved board'); return; }
-    const data = saved.json; const objs = Array.isArray(data.objects) ? data.objects : []; log('custom load: objects=', objs.length);
-    canvas.clear(); canvas.backgroundColor = CANVAS_BG;
+  // ==== 修正点2: 読込は Fabric.loadFromJSON を使わず自前復元 ====
+  async function loadBoard() {
+    log('loadBoard start');
+    const saved = await loadBoardJSON();
+    if (!saved?.json) { log('no saved board'); return; }
 
-    const revivePromises = []; let idx = 0;
-    for (const o of objs) { if (o.type!=='image') continue; revivePromises.push(restoreImageFromJSON(o, idx++)); }
+    const data = saved.json;
+    const objs = Array.isArray(data.objects) ? data.objects : [];
+    log('custom load: objects=', objs.length);
+
+    // クリアして背景色を設定
+    canvas.clear();
+    canvas.backgroundColor = CANVAS_BG;
+
+    // 画像だけ復元（src は参照しない）
+    const revivePromises = [];
+    let idx = 0;
+    for (const o of objs) {
+      if (o.type !== 'image') continue;
+      revivePromises.push(restoreImageFromJSON(o, idx++));
+    }
+
     await Promise.allSettled(revivePromises);
     log('custom load done; images=', canvas.getObjects('image').length);
-    safeRender(); enforceImageLimitAfterLoad(); scheduleGc();
+
+    safeRender();
+    enforceImageLimitAfterLoad();
+    scheduleGc();
   }
   loadBoard();
 
-  ['object:added','object:modified','object:removed'].forEach(ev => {
+  ['object:added', 'object:modified', 'object:removed'].forEach(ev => {
     canvas.on(ev, () => { log('canvas event', ev, 'objs=', canvas.getObjects().length, 'imgs=', getImageCount()); scheduleSave(); });
   });
 
   // ===== 参照されないBlobのGC =====
   const GC_GRACE_MS = 10 * 60 * 1000;
   const GC_INTERVAL_MIN = 2 * 60 * 1000;
-  let lastGcAt = 0; let gcTimer = null;
+  let lastGcAt = 0;
+  let gcTimer = null;
 
   function collectReferencedBlobKeys(){
-    const refs = new Set(); for (const o of canvas.getObjects('image')) { if (o.prxBlobKey) refs.add(o.prxBlobKey); }
-    log('collectReferencedBlobKeys (canvas-only) size', refs.size); return refs;
+    // キャンバス上の image オブジェクトの prxBlobKey のみを参照扱いにする
+    const refs = new Set();
+    for (const o of canvas.getObjects('image')) {
+      if (o.prxBlobKey) refs.add(o.prxBlobKey);
+    }
+    log('collectReferencedBlobKeys (canvas-only) size', refs.size);
+    return refs;
   }
 
-  async function runBlobGcChunked(limit=200){
+  async function runBlobGcChunked(limit = 200) {
     try{
-      const refs = collectReferencedBlobKeys(); const rows = await idbListAll('images'); const cutoff = Date.now() - GC_GRACE_MS;
-      let i = 0; let deleted = 0;
-      async function step(deadline){
+      const refs = collectReferencedBlobKeys();
+      const rows = await idbListAll('images');
+      const cutoff = Date.now() - GC_GRACE_MS;
+
+      let i = 0;
+      let deleted = 0;
+      async function step(deadline) {
         let count = 0;
         while (i < rows.length && (count < limit) && (deadline?.timeRemaining?.() > 5 || !deadline)) {
-          const r = rows[i++]; const id = r.id; const created = r.created || 0;
-          if (!refs.has(id) && created < cutoff) { try { await idbDelete('images', id); deleted++; } catch {} }
+          const r = rows[i++];
+          const id = r.id;
+          const created = r.created || 0;
+          if (!refs.has(id) && created < cutoff) {
+            try { await idbDelete('images', id); deleted++; } catch {}
+          }
           count++;
         }
-        if (i < rows.length) { if ('requestIdleCallback' in window) requestIdleCallback(step); else setTimeout(()=>step(),0); }
-        else { log('GC done; scanned', rows.length, 'deleted', deleted); }
+        if (i < rows.length) {
+          if ('requestIdleCallback' in window) requestIdleCallback(step);
+          else setTimeout(() => step(), 0);
+        } else {
+          log('GC done; scanned', rows.length, 'deleted', deleted);
+        }
       }
-      if ('requestIdleCallback' in window) requestIdleCallback(step); else setTimeout(()=>step(),0);
-    } catch(e) { warn('[PureFab/GC] failed:', e); }
+      if ('requestIdleCallback' in window) requestIdleCallback(step);
+      else setTimeout(() => step(), 0);
+    } catch(e) {
+      warn('[PureFab/GC] failed:', e);
+    }
   }
 
   function scheduleGc(){
-    const now = Date.now(); if (now - lastGcAt < GC_INTERVAL_MIN) return;
-    clearTimeout(gcTimer); gcTimer = setTimeout(()=>{ lastGcAt = Date.now(); log('GC scheduled'); runBlobGcChunked(); }, 1500);
+    const now = Date.now();
+    if (now - lastGcAt < GC_INTERVAL_MIN) return;
+    clearTimeout(gcTimer);
+    gcTimer = setTimeout(() => { lastGcAt = Date.now(); log('GC scheduled'); runBlobGcChunked(); }, 1500);
   }
 
   // ---- タブ可視状態で描画制御 ----
   document.addEventListener('visibilitychange', () => {
-    const hidden = document.hidden; canvas.renderOnAddRemove = !hidden; log('visibilitychange hidden=', hidden); if (!hidden) safeRender();
+    const hidden = document.hidden;
+    canvas.renderOnAddRemove = !hidden;
+    log('visibilitychange hidden=', hidden);
+    if (!hidden) safeRender();
   });
 
   // 将来拡張用フック
