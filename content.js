@@ -12,12 +12,87 @@
   // ==== デバッグヘルパ ====
   const DBG = true;
   const log  = (...a)=>{ if(DBG) console.log('[PureFab/DBG]', ...a); };
-  const warn = (...a)=>{ console.warn('[PureFab/DBG]', ...a); };
+  const warn = (...a)=>{ console.warn('[PureFab/WARN]', ...a); };
   const group = (title, fn, collapsed=true) => {
     if (!DBG) { try{ fn(); }catch(e){ warn('group fn error', e); } return; }
     try { (collapsed ? console.groupCollapsed : console.group)('[PureFab/DBG]', title); fn(); }
     finally { console.groupEnd(); }
   };
+
+  // ==== BOOT DIAG (環境調査) ====
+  (function bootDiagnostics(){
+    const gid = '%c[PureFab/BootDiag]'; const sty = 'color:#9bf';
+    console.groupCollapsed(gid, sty);
+    try {
+      const incognito = !!(chrome?.extension?.inIncognitoContext);
+      const ua = navigator.userAgent;
+      const isHttps = location.protocol === 'https:';
+      const fabricLoaded = !!(window.fabric && window.fabric.Canvas);
+      const idbSupported = !!window.indexedDB;
+      const hasClipboard = !!navigator.clipboard;
+
+      console.log('UA:', ua);
+      console.log('Incognito(inIncognitoContext):', incognito);
+      console.log('protocol https:', isHttps);
+      console.log('fabric loaded:', fabricLoaded);
+      console.log('indexedDB supported:', idbSupported);
+      console.log('clipboard api present:', hasClipboard);
+
+      // fabric 存在チェック（致命的なら早期にエラーログ）
+      if (!fabricLoaded) {
+        console.error('[PureFab/Boot] fabric not loaded yet (content_scriptsの順序/読み込み失敗が疑われます)');
+      }
+
+      // Permissions 調査（存在すれば）
+      (async () => {
+        let permRead = 'n/a', permWrite = 'n/a';
+        try {
+          if (navigator.permissions?.query) {
+            try { permRead  = (await navigator.permissions.query({ name: 'clipboard-read'  }))?.state || 'unknown'; } catch (e) { permRead = 'query-error'; }
+            try { permWrite = (await navigator.permissions.query({ name: 'clipboard-write' }))?.state || 'unknown'; } catch (e) { permWrite = 'query-error'; }
+          }
+        } catch {}
+        console.log('permissions (clipboard): read=', permRead, ' write=', permWrite);
+
+        // Clipboard 実可用性（ユーザジェスチャなしでの呼び出しは失敗し得るので presence と権限のみ）
+        console.log('clipboard.read available:', !!(navigator.clipboard && navigator.clipboard.read));
+        console.log('clipboard.readText available:', !!(navigator.clipboard && navigator.clipboard.readText));
+        console.log('clipboard.write available:', !!(navigator.clipboard && navigator.clipboard.write));
+
+        // IndexedDB 動作プローブ
+        if (idbSupported) {
+          try {
+            const req = indexedDB.open('pf_probe_' + Math.random().toString(36).slice(2));
+            req.onerror = () => console.warn('[PureFab/Boot] IndexedDB open error:', req.error?.name || req.error);
+            req.onupgradeneeded = () => { /* noop */ };
+            req.onsuccess = (e) => {
+              try {
+                const db = e.target.result;
+                console.log('[PureFab/Boot] IndexedDB OPEN ok; name=', db.name, 'ver=', db.version);
+                db.close();
+                indexedDB.deleteDatabase(db.name);
+              } catch (x) {
+                console.warn('[PureFab/Boot] IndexedDB probe close/delete error:', x?.name || x);
+              }
+            };
+          } catch (e) {
+            console.warn('[PureFab/Boot] IndexedDB exception:', e?.name || e);
+          }
+        }
+
+        // 画面可視状態
+        console.log('document.visibilityState:', document.visibilityState, ' hasFocus:', document.hasFocus());
+
+        // まとめオブジェクト（手元検証用）
+        window.__pf_bootdiag__ = {
+          incognito, isHttps, fabricLoaded, idbSupported, hasClipboard,
+          ts: Date.now()
+        };
+      })();
+    } finally {
+      console.groupEnd();
+    }
+  })();
 
   // ==== 二重起動ガード ====
   if (window.__PRX_PUREFAB_ACTIVE__) { console.debug('[PureFab] already active, skip init.'); return; }
@@ -28,7 +103,7 @@
     const tag = '%c[PureFab/ErrorTap]'; const sty = 'color:#0bf';
     window.addEventListener('error', (e) => {
       const msg = String(e.message || '');
-      if (msg.includes('alphabetical') || msg.includes('uiState')) {
+      if (msg.includes('alphabetical') || msg.includes('uiState') || msg.includes('fabric') || msg.includes('indexedDB')) {
         console.group(tag, sty);
         console.log('message :', msg);
         console.log('source  :', e.filename, 'line:', e.lineno, 'col:', e.colno);
@@ -39,7 +114,7 @@
     window.addEventListener('unhandledrejection', (e) => {
       const reason = e.reason;
       const msg = String((reason && (reason.message || reason)) || '');
-      if (msg.includes('alphabetical') || msg.includes('uiState')) {
+      if (msg.includes('alphabetical') || msg.includes('uiState') || msg.includes('fabric') || msg.includes('indexedDB')) {
         console.group(tag, sty);
         console.log('message :', msg);
         if (reason && reason.stack) console.log('stack   :\n' + reason.stack);
